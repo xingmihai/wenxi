@@ -76,6 +76,22 @@ class NativeBridge(private val context: Context, engine: FlutterEngine) {
         }
     }
     private fun handle(call: MethodCall, result: MethodChannel.Result) {
+        if (call.method == "flushStateKeyStorage") {
+            val namespace = call.argument<String>("namespace")
+            io.execute {
+                try {
+                    val saved = StateKeyPersistence.flush(context, namespace)
+                    main.post { result.success(saved) }
+                } catch (_: Exception) {
+                    main.post { result.error("state_key_persistence", "本地密钥保存失败", null) }
+                }
+            }
+            return
+        }
+        if (call.method == "clientEnvironment") {
+            result.success(ClientEnvironment.read(context))
+            return
+        }
         if (call.method.startsWith("downloadOverlay")) {
             try {
                 when (call.method) {

@@ -10,9 +10,9 @@ import 'package:tray_manager/tray_manager.dart';
 import 'package:window_manager/window_manager.dart';
 import 'app_services.dart';
 import 'diagnostics/app_log.dart';
-import 'diagnostics/diagnostic_bundle.dart';
 import 'diagnostics/diagnostic_runtime.dart';
-import 'ui/diagnostics_page.dart';
+import 'ui/startup_failure_page.dart';
+export 'ui/startup_failure_page.dart';
 import 'domain/downloads.dart';
 import 'ui/app_navigation.dart';
 import 'ui/remote_control_dialogs.dart';
@@ -86,47 +86,6 @@ Future<void> main() async {
   }
 }
 
-class StartupFailurePage extends StatelessWidget {
-  const StartupFailurePage(this.error, {super.key, this.onRetry});
-  final Object error;
-  final VoidCallback? onRetry;
-  @override
-  Widget build(BuildContext context) => Scaffold(
-    appBar: AppBar(title: const Text('文析助手 启动失败')),
-    body: EmptyPanel(
-      '应用暂时无法启动',
-      errorText(error),
-      action: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          if (onRetry != null)
-            FilledButton(onPressed: onRetry, child: const Text('重试')),
-          TextButton(
-            onPressed: () => _openStartupDiagnostics(context),
-            child: const Text('导出故障日志'),
-          ),
-        ],
-      ),
-    ),
-  );
-}
-
-void _openStartupDiagnostics(BuildContext context) {
-  final log = DiagnosticLog.active;
-  if (log == null) return;
-  Navigator.push<void>(
-    context,
-    MaterialPageRoute(
-      builder: (_) => DiagnosticsPage(
-        DiagnosticBundle(
-          log,
-          snapshot: () => <String, dynamic>{'startupFailed': true},
-        ),
-      ),
-    ),
-  );
-}
-
 class _Bootstrap extends StatefulWidget {
   const _Bootstrap();
   @override
@@ -134,7 +93,14 @@ class _Bootstrap extends StatefulWidget {
 }
 
 class _BootstrapState extends State<_Bootstrap> {
-  late Future<AppServices> services = loadServices();
+  late Future<AppServices> services = _startServices();
+  Future<AppServices> _startServices() {
+    final pending = loadServices();
+    // Attach an error handler immediately, before FutureBuilder's next frame.
+    pending.ignore();
+    return pending;
+  }
+
   Future<AppServices> loadServices() async {
     try {
       return await AppServices.open();
@@ -157,7 +123,7 @@ class _BootstrapState extends State<_Bootstrap> {
         home: state.hasError
             ? StartupFailurePage(
                 state.error!,
-                onRetry: () => setState(() => services = loadServices()),
+                onRetry: () => setState(() => services = _startServices()),
               )
             : const StartupLoadingPage(),
       );

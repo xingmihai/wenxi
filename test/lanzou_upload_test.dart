@@ -202,6 +202,76 @@ void main() {
     },
   );
 
+  for (final empty in [false, true]) {
+    test(
+      'Cookie login survives a disk page without API parameters, empty=$empty',
+      () async {
+        final http = FakeHttp((r) {
+          if (r.uri.path == '/mydisk.php') {
+            return const HttpResult(200, '<html><div id="files"></div></html>');
+          }
+          expect(r.uri.path, '/doupload.php');
+          expect(r.uri.queryParameters, isEmpty);
+          expect(r.headers['Cookie'], contains('phpdisk_info=personal-cookie'));
+          expect(Uri.splitQueryString(r.body as String), {
+            'task': '5',
+            'folder_id': '-1',
+            'pg': '1',
+          });
+          return jsonResponse(
+            empty
+                ? {'zt': 2}
+                : {
+                    'zt': 1,
+                    'text': [
+                      {'id': '7', 'name': 'fixture.txt'},
+                    ],
+                  },
+          );
+        });
+        final result = await LanzouConnector(http).authenticate(
+          Credential('fixture', {
+            'primary': 'ylogin=12345; phpdisk_info=personal-cookie',
+          }, updatedAt: 42),
+        );
+        expect(result.credential.field('userId'), '12345');
+        expect(
+          result.credential.primary,
+          contains('phpdisk_info=personal-cookie'),
+        );
+        expect(result.credential.updatedAt, 42);
+        expect(http.calls, hasLength(2));
+      },
+    );
+  }
+
+  for (final invalid in [
+    const HttpResult(401, ''),
+    jsonResponse({'zt': 9}),
+    jsonResponse({'zt': 1}),
+    const HttpResult(200, '<html>verification required</html>'),
+  ]) {
+    test(
+      'Missing page parameters never bypass file access validation: ${invalid.status}/${invalid.body}',
+      () async {
+        final http = FakeHttp(
+          (r) => r.uri.path == '/mydisk.php'
+              ? const HttpResult(200, '<html>alternate disk page</html>')
+              : invalid,
+        );
+        await expectLater(
+          LanzouConnector(http).authenticate(
+            Credential('fixture', {
+              'primary': 'ylogin=12345; phpdisk_info=personal-cookie',
+            }),
+          ),
+          throwsA(isA<AppException>()),
+        );
+        expect(http.calls, hasLength(2));
+      },
+    );
+  }
+
   test('Login scans management paths and the official accounts host', () {
     final target = WebLoginTarget.targets[CloudPlatform.lanzou]!;
     expect(target.url, 'https://pc.woozooo.com/account.php?action=login');

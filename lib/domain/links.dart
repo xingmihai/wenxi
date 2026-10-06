@@ -85,8 +85,15 @@ class LinkParser {
         var url = normalize(raw);
         var uri = Uri.parse(url);
         final platform = CloudPlatform.fromHost(uri.host);
-        if (platform == CloudPlatform.ctfile && raw.contains('](')) {
+        if ((platform == CloudPlatform.ctfile ||
+                platform == CloudPlatform.feijipan) &&
+            raw.contains('](')) {
           raw = raw.substring(0, raw.indexOf(']('));
+          url = normalize(raw);
+          uri = Uri.parse(url);
+        }
+        if (platform == CloudPlatform.feijipan && raw.endsWith('`')) {
+          raw = raw.replaceFirst(RegExp(r'`+$'), '');
           url = normalize(raw);
           uri = Uri.parse(url);
         }
@@ -105,7 +112,8 @@ class LinkParser {
                     (platform == CloudPlatform.lanzou ? match.start : 0);
           if (proseStart != null && proseStart < raw.length) {
             raw = raw.substring(0, proseStart).replaceFirst(_punctuation, '');
-            if (platform == CloudPlatform.ctfile) {
+            if (platform == CloudPlatform.ctfile ||
+                platform == CloudPlatform.feijipan) {
               raw = raw.replaceFirst(RegExp(r'[(（]+$'), '');
             }
             url = normalize(raw);
@@ -232,6 +240,9 @@ class LinkParser {
     if (platform == CloudPlatform.ctfile) {
       return _ctfileCode(uri);
     }
+    if (platform == CloudPlatform.feijipan) {
+      return _feijipanCode(uri);
+    }
     final lanzou = platform == CloudPlatform.lanzou;
     // VLa: decoded query -> hash-route query -> raw URL -> text labels.
     // See docs/LINK-RECOGNITION.md for addresses and compatibility extensions.
@@ -299,6 +310,34 @@ class LinkParser {
       if (match != null) return '${match[1]}/${match[2]}';
     }
     return null;
+  }
+
+  static String? _feijipanShareId(Uri uri) {
+    final route = RegExp(r'^/s/([A-Za-z0-9]{4,64})/?$');
+    final direct = route.firstMatch(uri.path)?[1];
+    if (direct != null) return direct;
+    // Hash routes belong at the site root, never inside a help/login path.
+    if (uri.path.isNotEmpty && uri.path != '/') return null;
+    if (!uri.fragment.startsWith('/')) return null;
+    final fragment = Uri.tryParse(uri.fragment);
+    return fragment == null || fragment.hasAuthority
+        ? null
+        : route.firstMatch(fragment.path)?[1];
+  }
+
+  static String? _feijipanCode(Uri uri) {
+    final valid = RegExp(r'^[A-Za-z0-9]{4}$');
+    bool accepted(String value) => valid.hasMatch(value) && _isCode(value);
+    // The official copy action uses `code`; preserve its priority over aliases.
+    for (final part in _parts(uri)) {
+      final parameters = _parameters(part.query);
+      for (final key in ['code', ..._codeKeys, 'accesscode']) {
+        final value = parameters[key]?.trim();
+        if (value != null && accepted(value)) return value;
+      }
+    }
+    final fragment = uri.fragment.trim();
+    return accepted(fragment) ? fragment : null;
   }
 
   static Map<String, String> _parameters(String query) {
@@ -371,6 +410,7 @@ class LinkParser {
     }
     final parts = _parts(uri);
     return switch (platform) {
+      CloudPlatform.feijipan => _feijipanShareId(uri),
       CloudPlatform.ctfile => _ctfileShareId(uri),
       CloudPlatform.baidu =>
         _queryId(parts, 'surl') ??

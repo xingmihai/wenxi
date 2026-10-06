@@ -7,7 +7,7 @@
     "reason": "Decrypted and reviewed JVM compatibility vector: fixture/test-only credentials, fixture UUID and a repeated-character device ID. See test/fixtures/README.md."
   },
   "test/remote_control_resilience_test.dart": {
-    "sha256": "f3fd7e78e091e3440cc6d85a4b2bf30a3f09e15fcf72e2174ce76ed8762f8027",
+    "sha256": "8a0456a9d1c9cfa33a9cf96a07ef76bd1e9eafd71192b845ed3c2bb6d6f5767e",
     "reason": "Synthetic credential-bearing URLs on reserved example/test hosts exercise rejection of unsafe URLs."
   },
   "test/remote_control_test.dart": {

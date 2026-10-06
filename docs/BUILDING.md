@@ -26,6 +26,8 @@ flutter pub get
 
 该入口固定读取本机正式配置，不会回退公开模板。配置与签名、账号备份和日志不上传 GitHub。
 
+百度下载与播放需要配置取链服务：复制 `config/baidu-api.example.json` 到 `.local/baidu-api.defines.json`，填写服务地址、服务端 RSA 公钥模数（十六进制）和客户端访问码。构建脚本自动加载该文件；直接使用 Flutter 编译时加上 `--dart-define-from-file=.local/baidu-api.defines.json`。未配置时会明确提示百度取链服务未配置。服务端私钥和私有实现不随 App 发布。
+
 ## 输出位置
 
 | 产物 | 路径 |

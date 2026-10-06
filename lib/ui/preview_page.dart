@@ -11,6 +11,7 @@ import '../download/image_preview_loader.dart';
 import '../playback/playback_controller.dart';
 import '../playback/playback_sources.dart';
 import 'common.dart';
+import 'baidu_download_prompt.dart';
 import 'operation_progress_view.dart';
 import 'player_page.dart';
 import 'uc_tv_authorization_page.dart';
@@ -112,6 +113,14 @@ class _PreviewPageState extends State<PreviewPage> {
     if (adding) return;
     setState(() => adding = true);
     try {
+      if (!await confirmBaiduDownload(
+            context,
+            widget.services,
+            widget.session.platform,
+          ) ||
+          !mounted) {
+        return;
+      }
       var value = spec;
       if (value == null) {
         value = await widget.services.cloud.prepare(
@@ -160,6 +169,11 @@ class _PreviewPageState extends State<PreviewPage> {
     if (playback != null) {
       return PlayerPage(
         playback!,
+        confirmDownload: () => confirmBaiduDownload(
+          context,
+          widget.services,
+          playback!.current.platform,
+        ),
         onAuthorizeUcTv: widget.session.platform == CloudPlatform.uc
             ? () => openUcTvAuthorization(
                 context,

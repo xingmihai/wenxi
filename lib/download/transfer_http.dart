@@ -61,15 +61,23 @@ Duration downloadRetryDelay(int attempt, Object error) {
 }
 
 class Probe {
-  const Probe(this.identity, this.hls);
+  const Probe(
+    this.identity,
+    this.hls, {
+    this.rangeSupported = false,
+    this.host,
+  });
   final RemoteIdentity identity;
   final bool hls;
+  final bool rangeSupported;
+  final String? host;
 
   factory Probe.response(
     int code,
     Map<String, String> headers, {
     bool hlsPath = false,
     int probeBytes = 1,
+    String? host,
   }) {
     if (code == 416 && headers['content-range'] == 'bytes */0') {
       return Probe(
@@ -105,6 +113,8 @@ class Probe {
       RemoteIdentity(total, headers['etag'], headers['last-modified']),
       hlsPath ||
           (headers['content-type']?.toLowerCase().contains('mpegurl') ?? false),
+      rangeSupported: code == 206,
+      host: host,
     );
   }
 }
@@ -205,6 +215,7 @@ class TransferHttp {
                 entry.key.toLowerCase(): entry.value.first,
           },
           probeBytes: probeBytes,
+          host: _responseUri(response).host,
           hlsPath:
               Uri.parse(url).path.toLowerCase().endsWith('.m3u8') ||
               _responseUri(response).path.toLowerCase().endsWith('.m3u8'),

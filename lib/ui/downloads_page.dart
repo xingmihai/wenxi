@@ -8,6 +8,7 @@ import 'package:share_plus/share_plus.dart';
 import '../app_services.dart';
 import '../core/json.dart';
 import '../domain/downloads.dart';
+import '../domain/models.dart' show CloudPlatform;
 import '../download/completed_files.dart';
 import '../platform/file_access.dart';
 import '../playback/playback_sources.dart';
@@ -740,28 +741,32 @@ class _DownloadsPageState extends State<DownloadsPage>
                               size: 14,
                             ),
                           ),
-                        const SizedBox(width: 5),
-                        Tooltip(
-                          message: _connectionDescription(task),
-                          child: Container(
-                            padding: const EdgeInsets.symmetric(
-                              horizontal: 4,
-                              vertical: 1,
-                            ),
-                            decoration: BoxDecoration(
-                              color: fill(context),
-                              borderRadius: BorderRadius.circular(3),
-                            ),
-                            child: Text(
-                              _connectionLabel(task),
-                              key: ValueKey('download-connections-${task.id}'),
-                              style: TextStyle(
-                                fontSize: 9,
-                                color: secondary(context),
+                        if (!_isBaiduDownload(task)) ...[
+                          const SizedBox(width: 5),
+                          Tooltip(
+                            message: _connectionDescription(task),
+                            child: Container(
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 4,
+                                vertical: 1,
+                              ),
+                              decoration: BoxDecoration(
+                                color: fill(context),
+                                borderRadius: BorderRadius.circular(3),
+                              ),
+                              child: Text(
+                                _connectionLabel(task),
+                                key: ValueKey(
+                                  'download-connections-${task.id}',
+                                ),
+                                style: TextStyle(
+                                  fontSize: 9,
+                                  color: secondary(context),
+                                ),
                               ),
                             ),
                           ),
-                        ),
+                        ],
                       ],
                     ),
                     const SizedBox(height: 5),
@@ -1017,6 +1022,11 @@ class _DownloadsPageState extends State<DownloadsPage>
     });
   }
 
+  bool _isBaiduDownload(DownloadTask task) =>
+      task.spec.platform == CloudPlatform.baidu ||
+      task.spec.profile == 'baidu' ||
+      task.spec.profile == 'baidu_preview';
+
   String _connectionLabel(DownloadTask task) {
     if (task.spec.isTorrent) return 'BT';
     if (task.hls.isNotEmpty) return 'HLS';
@@ -1029,6 +1039,7 @@ class _DownloadsPageState extends State<DownloadsPage>
   }
 
   String _connectionDescription(DownloadTask task) {
+    if (_isBaiduDownload(task)) return '${task.retries} 次重试';
     if (task.spec.isTorrent) return 'BT · 最多 80 个对等节点';
     if (task.hls.isNotEmpty) return 'HLS 分片下载 · ${task.retries} 次重试';
     final counts = widget.services.downloads.httpConnections(task.id);

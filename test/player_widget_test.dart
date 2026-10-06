@@ -59,6 +59,8 @@ void main() {
     PlaybackFixture? suppliedFixture,
     FakePlaybackDevice? suppliedDevice,
     bool downloadAvailable = false,
+    Future<bool> Function()? confirmDownload,
+    VoidCallback? onDownload,
     bool settle = true,
   }) async {
     tester.view.devicePixelRatio = 1;
@@ -99,7 +101,12 @@ void main() {
               subtitleDirectory: directory,
               device: device,
               chooseSubtitle: chooseSubtitle,
-              onDownload: downloadAvailable ? (_) async {} : null,
+              confirmDownload: confirmDownload,
+              onDownload: downloadAvailable
+                  ? (_) async {
+                      onDownload?.call();
+                    }
+                  : null,
             ),
           },
         ),
@@ -127,6 +134,32 @@ void main() {
     await tester.pumpAndSettle();
     expect(tester.takeException(), isNull);
   }
+
+  testWidgets(
+    'player waits for download confirmation and cancellation creates no task',
+    (tester) async {
+      var decision = Completer<bool>();
+      var downloads = 0;
+      await render(
+        tester,
+        downloadAvailable: true,
+        confirmDownload: () => decision.future,
+        onDownload: () => downloads++,
+      );
+      await tap(tester, find.byTooltip('下载文件'));
+      expect(downloads, 0);
+      decision.complete(false);
+      await tester.pumpAndSettle();
+      expect(downloads, 0);
+      expect(find.text('已添加到下载队列'), findsNothing);
+      decision = Completer<bool>();
+      await tap(tester, find.byTooltip('下载文件'));
+      expect(downloads, 0);
+      decision.complete(true);
+      await tester.pumpAndSettle();
+      expect(downloads, 1);
+    },
+  );
 
   Future<void> openSetting(WidgetTester tester, String label) async {
     if (label == '选集') {

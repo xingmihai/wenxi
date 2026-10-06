@@ -37,6 +37,8 @@ void main() {
           {'Cookie': 'session=fixture'},
         );
         expect(result.identity.total, total);
+        expect(result.rangeSupported, isTrue);
+        expect(result.host, '127.0.0.1');
         expect(requests, ['bytes=0-0', 'bytes=0-1']);
       } finally {
         http.dio.close(force: true);
@@ -70,6 +72,7 @@ void main() {
             {},
           );
           expect(result.identity.total, length);
+          expect(result.rangeSupported, isFalse);
           expect(requests, length == 0 ? 1 : 2);
         } finally {
           http.dio.close(force: true);

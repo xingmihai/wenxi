@@ -27,8 +27,10 @@ https://www.alipan.com/s/Ali123 提取码：a123
 https://115cdn.com/s/swfixture?password=k115
 https://pan.wo.cn/s/1F1t6r76400?password=w123
 https://www.guangyapan.com/s/Guangya123 提取码：g123
+https://url69.ctfile.com/f/66485969-17569901563698-90650b?p=1664
+https://share.feijipan.com/s/Share123?code=f123
 ''');
-    expect(links.length, 12);
+    expect(links.length, 14);
     expect(
       links.map((l) => l.platform).toSet(),
       CloudPlatform.values.where((p) => p.supportsShareParsing).toSet(),
@@ -46,6 +48,8 @@ https://www.guangyapan.com/s/Guangya123 提取码：g123
       'k115',
       'w123',
       'g123',
+      '1664',
+      'f123',
     ]);
     expect(links.every((l) => l.kind == LinkKind.cloudShare), isTrue);
   });
@@ -129,7 +133,33 @@ https://www.guangyapan.com/s/Guangya123 提取码：g123
     const defaults = AppSettings();
     expect(defaults.connectionsFor(CloudPlatform.quark), 512);
     expect(defaults.connectionsFor(CloudPlatform.uc), 512);
-    expect(defaults.connectionsFor(CloudPlatform.baidu), 64);
+    expect(defaults.connectionsFor(CloudPlatform.baidu), 1);
+    expect(defaults.connectionsFor(CloudPlatform.baidu, 'baidu_preview'), 1);
+    expect(
+      defaults.connectionProfileFor(null, 'baidu_preview'),
+      'baidu_preview',
+    );
+    expect(
+      const AppSettings(
+        threads: 512,
+        threadOverrides: {'baidu': 512},
+      ).connectionsFor(null, 'baidu_preview'),
+      1,
+    );
+    expect(
+      const AppSettings(
+        threads: 512,
+        threadOverrides: {'baidu': 512},
+      ).connectionsFor(CloudPlatform.baidu),
+      1,
+    );
+    expect(
+      const AppSettings(
+        threads: 512,
+        threadOverrides: {'baidu': 0},
+      ).connectionsFor(null, 'baidu'),
+      1,
+    );
     expect(defaults.connectionsFor(CloudPlatform.xunlei), 64);
     expect(defaults.connectionsFor(null), 64);
     const custom = AppSettings(

@@ -124,6 +124,64 @@ class _Fixture {
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
+  for (final profile in ['baidu', 'baidu_preview']) {
+    for (final ready in [false, true]) {
+      test(
+        'Baidu resume and route changes apply $profile limit, ready=$ready',
+        () async {
+          const limit = 1;
+          final planned = _planned('baidu');
+          final spec = DownloadSpec.fromJson({
+            ...planned.toJson(),
+            'profile': ready
+                ? profile
+                : (profile == 'baidu' ? 'baidu_preview' : 'baidu'),
+            'source': {
+              ...planned.source!,
+              'platform': CloudPlatform.baidu.key,
+              'session': {
+                ...planned.source!.obj('session'),
+                'platform': CloudPlatform.baidu.key,
+              },
+            },
+            'url': ready ? 'https://cdn.example.test/baidu' : '',
+          });
+          final task = DownloadTask(
+            id: 'old-baidu',
+            spec: spec,
+            createdAt: 1,
+            status: DownloadStatus.paused,
+            connections: 64,
+            connectionOptions: const {'baidu': 512},
+          );
+          final fixture = await _Fixture.create(
+            state: StateStore.memory({
+              'settings': {
+                'threads': 512,
+                'downloadThreadOverrides': {'baidu': 512},
+              },
+              'tasks': [task.toJson()],
+            }),
+          );
+          fixture.resolve = (previous) async => DownloadSpec.fromJson({
+            ...previous.toJson(),
+            'profile': profile,
+            'url': 'https://cdn.example.test/baidu',
+          });
+          await fixture.manager.resume(task.id);
+          await until(
+            () =>
+                fixture.manager.task(task.id)!.status ==
+                DownloadStatus.completed,
+          );
+          expect(fixture.manager.task(task.id)!.connections, limit);
+          expect(fixture.native.begins.single['connections'], limit);
+          expect(fixture.native.begins.single['connectionProfile'], profile);
+        },
+      );
+    }
+  }
+
   test(
     'Failed guest attempts still explain the route and do not repeat on retry',
     () async {

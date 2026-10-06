@@ -323,7 +323,7 @@ class BackupRepository {
       };
       if (settings != null) draft['settings'] = settings;
       Vault.migrateDraft(draft);
-    });
+    }, recoveryPassword: password);
     return accounts?.length ?? credentials.length;
   }
 }

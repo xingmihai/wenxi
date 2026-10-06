@@ -166,7 +166,12 @@ class MinePage extends StatelessWidget {
       return;
     }
     if (!context.mounted ||
-        !await confirm(context, '恢复备份', '备份中的账号和设置将覆盖本机对应项目，下载文件不会被删除。') ||
+        !await confirm(
+          context,
+          '恢复备份',
+          '备份中的账号和设置将覆盖本机对应项目，下载文件不会被删除。\n'
+              '导入成功后，此备份密码也可用于恢复本机数据访问，请妥善保管。',
+        ) ||
         !context.mounted) {
       return;
     }
@@ -179,7 +184,7 @@ class MinePage extends StatelessWidget {
     );
     if (count != null && context.mounted) {
       await services.downloads.settingsChanged();
-      if (context.mounted) message(context, '已恢复 $count 个账号及下载设置');
+      if (context.mounted) message(context, '已恢复 $count 个账号及下载设置，并建立密码恢复保护');
     }
   }
 
@@ -421,7 +426,9 @@ class MinePage extends StatelessWidget {
           style: TextStyle(fontSize: 12, color: secondary(context)),
         ),
         children: [
-          for (final entry in AppSettings.profiles.entries)
+          for (final entry in AppSettings.profiles.entries.where(
+            (entry) => entry.key != 'baidu',
+          ))
             ListTile(
               contentPadding: const EdgeInsets.only(left: 62, right: 18),
               title: Text(entry.value.$1, style: const TextStyle(fontSize: 13)),

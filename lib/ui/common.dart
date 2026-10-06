@@ -242,8 +242,10 @@ Future<String?> askText(
   bool secret = false,
   bool numeric = false,
   int lines = 1,
+  bool barrierDismissible = true,
 }) => showDialog<String>(
   context: context,
+  barrierDismissible: barrierDismissible,
   builder: (_) => _TextDialog(title, initial, hint, secret, numeric, lines),
 );
 

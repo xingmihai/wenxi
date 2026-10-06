@@ -29,6 +29,7 @@ class PlayerPage extends StatefulWidget {
     required this.subtitleDirectory,
     this.device,
     this.onDownload,
+    this.confirmDownload,
     this.chooseSubtitle,
     this.onAuthorizeUcTv,
   });
@@ -36,6 +37,7 @@ class PlayerPage extends StatefulWidget {
   final Directory subtitleDirectory;
   final PlaybackDevice? device;
   final Future<void> Function(DownloadSpec source)? onDownload;
+  final Future<bool> Function()? confirmDownload;
   final Future<XFile?> Function()? chooseSubtitle;
   final Future<bool> Function()? onAuthorizeUcTv;
   @override
@@ -1640,6 +1642,7 @@ class _PlayerPageState extends State<PlayerPage>
     if (_adding || widget.onDownload == null) return;
     setState(() => _adding = true);
     try {
+      if (!(await widget.confirmDownload?.call() ?? true) || !mounted) return;
       await controller.enqueueDownload(widget.onDownload!);
       if (mounted) _showHud('已添加到下载队列');
     } finally {

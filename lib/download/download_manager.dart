@@ -23,14 +23,23 @@ import 'download_request.dart';
 import 'download_playback_cache.dart';
 import 'space_budget.dart';
 import 'transfer_http.dart';
+import 'baidu_transfer_recovery.dart';
 
 class _Stopped implements Exception {}
+
+class _RecoverBaidu implements Exception {
+  const _RecoverBaidu(this.action);
+  final BaiduRecoveryAction action;
+}
 
 class _GuestDownloadBatch {
   bool notified = false;
 }
 
 class _Run {
+  _Run(this.clock);
+  final Stopwatch clock;
+  final baiduRecovery = BaiduTransferRecovery();
   final scope = RequestScope();
   final wake = Completer<void>();
   bool stopped = false;
@@ -71,6 +80,7 @@ class DownloadManager extends ChangeNotifier {
     this.foreground,
     this.checkNewCloudTask,
     this.onGuestDownload,
+    this.transferClock = Stopwatch.new,
   }) {
     space = SpaceBudget(
       () => files.freeBytes(engine.cache.path),
@@ -86,6 +96,8 @@ class DownloadManager extends ChangeNotifier {
   final Future<DownloadSpec> Function(DownloadSpec) refreshSource;
   final void Function(CloudPlatform)? checkNewCloudTask;
   final VoidCallback? onGuestDownload;
+  @visibleForTesting
+  final Stopwatch Function() transferClock;
   final Future<void> Function(DownloadActivity activity)? foreground;
   late final SpaceBudget space;
   final _tasks = <String, DownloadTask>{}, _running = <String, _Run>{};
@@ -622,7 +634,7 @@ class DownloadManager extends ChangeNotifier {
                   .firstOrNull ??
               pending.firstOrNull;
           if (next == null) break;
-          final run = _Run();
+          final run = _Run(transferClock()..start());
           _running[next.id] = run;
           _unsettledRuns.add(run);
           run.done = run.scope
@@ -1137,7 +1149,8 @@ class DownloadManager extends ChangeNotifier {
         }
       }
       if (output == null) {
-        for (var refresh = 0; ; refresh++) {
+        var refresh = 0;
+        while (true) {
           run.check();
           try {
             output = await _networkRetry<File>(
@@ -1146,12 +1159,33 @@ class DownloadManager extends ChangeNotifier {
               () => _transfer(id, run),
             );
             break;
+          } on _RecoverBaidu catch (recovery) {
+            await engine.pause(id);
+            run.check();
+            if (recovery.action == BaiduRecoveryAction.refreshLink &&
+                _tasks[id]!.spec.source != null) {
+              try {
+                await _prepareSource(id, run, preserveProgress: true);
+              } catch (error) {
+                run.check();
+                // Recovery is optional. A failed refresh keeps the last
+                // working source and never discards an existing checkpoint.
+                DiagnosticLog.event(
+                  'download.slow_refresh_skipped',
+                  fields: {
+                    'ref': DiagnosticLog.reference(id),
+                    'kind': error.runtimeType.toString(),
+                  },
+                );
+              }
+            }
           } on DownloadHttpException catch (e) {
             if (!e.mayRefresh ||
                 refresh >= 2 ||
                 _tasks[id]!.spec.source == null) {
               rethrow;
             }
+            refresh++;
             await engine.pause(id);
             await _prepareSource(id, run);
           }
@@ -1359,7 +1393,11 @@ class DownloadManager extends ChangeNotifier {
     }
   }
 
-  Future<void> _prepareSource(String id, _Run run) async {
+  Future<void> _prepareSource(
+    String id,
+    _Run run, {
+    bool preserveProgress = false,
+  }) async {
     run.check();
     final previous = _tasks[id]!;
     await _update(id, {
@@ -1372,6 +1410,21 @@ class DownloadManager extends ChangeNotifier {
       run.check();
       _validateDownloadUrl(fresh);
       require(fresh.platform == previous.spec.platform, '下载来源发生变化，请重新添加任务');
+      if (preserveProgress) {
+        require(
+          previous.spec.profile != 'baidu_preview' ||
+              fresh.profile == 'baidu_preview',
+          '预览通道暂不可用，保留当前下载地址',
+        );
+        final probe = await http.probe(fresh.url, fresh.headers);
+        run.check();
+        require(
+          !probe.hls &&
+              probe.rangeSupported &&
+              previous.identity.canResume(probe.identity),
+          '新地址无法确认断点，保留当前下载地址',
+        );
+      }
       final profile = settings.connectionProfileFor(
         fresh.platform,
         fresh.profile,
@@ -1394,7 +1447,12 @@ class DownloadManager extends ChangeNotifier {
       try {
         await _update(id, {
           'spec': spec,
-          'connections': previous.spec.needsPreparation
+          'connections':
+              fresh.platform == CloudPlatform.baidu ||
+                  profile == 'baidu' ||
+                  profile == 'baidu_preview'
+              ? settings.connectionsFor(fresh.platform, profile)
+              : previous.spec.needsPreparation
               ? previous.connectionOptions[profile ?? 'default'] ??
                     previous.connections
               : previous.connections,
@@ -1530,6 +1588,13 @@ class DownloadManager extends ChangeNotifier {
     await _update(id, {
       'identity': probe.identity.toJson(),
       'total': total,
+      if (task.spec.platform == CloudPlatform.baidu ||
+          task.spec.profile == 'baidu' ||
+          task.spec.profile == 'baidu_preview')
+        'connections': settings.connectionsFor(
+          task.spec.platform,
+          task.spec.profile,
+        ),
       'payloadReady': false,
       'phase': '',
     });
@@ -1558,6 +1623,24 @@ class DownloadManager extends ChangeNotifier {
       });
     });
     var persisted = 0;
+    final baidu =
+        task.spec.platform == CloudPlatform.baidu ||
+        {'baidu', 'baidu_preview'}.contains(task.spec.profile);
+    if (baidu) {
+      run.baiduRecovery.start(run.clock.elapsed, task.downloaded);
+      DiagnosticLog.event(
+        'download.baidu_transfer_start',
+        fields: {
+          'ref': DiagnosticLog.reference(id),
+          'profile': task.spec.profile,
+          'probeHost': probe.host,
+          'downloaded': task.downloaded,
+          'total': total,
+          'resumable': probe.rangeSupported && probe.identity.ifRange != null,
+          'recoveryAttempt': run.baiduRecovery.attempts,
+        },
+      );
+    }
     while (true) {
       run.check();
       final state = await engine.snapshot(id),
@@ -1645,6 +1728,48 @@ class DownloadManager extends ChangeNotifier {
       if (state.str('status') == 'pause') {
         run.check();
         throw const AppException('下载组件已暂停，请继续任务');
+      }
+      if (baidu) {
+        final sample = run.baiduRecovery.observe(
+          now: run.clock.elapsed,
+          downloaded: downloaded,
+          total: currentTotal,
+          speedLimit: task.speedLimit,
+          canRecover:
+              state.str('status') == 'running' &&
+              state.integer('activeConnections') > 0 &&
+              probe.rangeSupported &&
+              probe.identity.ifRange != null &&
+              _networkCount == 1 &&
+              !_playbackHolds.containsKey(id),
+        );
+        if (sample != null) {
+          DiagnosticLog.event(
+            'download.baidu_speed',
+            fields: {
+              'ref': DiagnosticLog.reference(id),
+              'profile': task.spec.profile,
+              'bytesPerSecond': sample.bytesPerSecond,
+              'windowMs': sample.windowMs,
+              'downloaded': downloaded,
+              'total': currentTotal,
+              'recoveryAttempt': run.baiduRecovery.attempts,
+            },
+          );
+          if (sample.action != null) {
+            DiagnosticLog.event(
+              'download.slow_recovery',
+              fields: {
+                'ref': DiagnosticLog.reference(id),
+                'action': sample.action!.name,
+                'attempt': run.baiduRecovery.attempts,
+                'bytesPerSecond': sample.bytesPerSecond,
+              },
+            );
+            await _update(id, {'phase': '连接持续较慢，正在尝试恢复', 'speed': 0});
+            throw _RecoverBaidu(sample.action!);
+          }
+        }
       }
       await run.delay(const Duration(milliseconds: 350));
     }

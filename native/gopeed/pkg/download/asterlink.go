@@ -95,7 +95,7 @@ func (d *Downloader) PauseAndSave(id string) error {
 
 // Replace only the request after the Android caller has verified the remote identity.
 // Keeping the fetcher's range state avoids losing progress when a signed URL expires.
-func (d *Downloader) ReplacePausedRequest(id string, req *base.Request) error {
+func (d *Downloader) ReplacePausedRequest(id string, req *base.Request, connectionProfile string) error {
 	task := d.GetTask(id)
 	if task == nil {
 		return ErrTaskNotFound
@@ -107,6 +107,22 @@ func (d *Downloader) ReplacePausedRequest(id string, req *base.Request) error {
 	}
 	if err := base.ParseReqExtra[fhttp.ReqExtra](req); err != nil {
 		return err
+	}
+	// Upgrade old Baidu checkpoints without discarding their completed ranges.
+	// Other providers retain the options captured when the task was created.
+	if limit := fhttp.BaiduConnectionLimit(connectionProfile); limit > 0 {
+		if err := base.ParseOptsExtra[fhttp.OptsExtra](task.Meta.Opts); err != nil {
+			return err
+		}
+		if task.Meta.Opts.Extra == nil {
+			task.Meta.Opts.Extra = &fhttp.OptsExtra{}
+		}
+		extra := task.Meta.Opts.Extra.(*fhttp.OptsExtra)
+		extra.Connections = limit
+		extra.ConnectionProfile = connectionProfile
+		if task.fetcher != nil {
+			task.fetcher.Meta().Opts = task.Meta.Opts
+		}
 	}
 	task.Meta.Req = req
 	if task.fetcher != nil {

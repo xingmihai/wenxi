@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../app_services.dart';
 import '../data/cloud_favorites.dart';
 import '../domain/models.dart';
+import 'app_popup_menu.dart';
 import 'browser_page.dart';
 import 'common.dart';
 
@@ -56,6 +57,20 @@ class _CloudFavoritesPageState extends State<CloudFavoritesPage> {
   Future<void> _open(CloudFavorite favorite) =>
       openCloudFavorite(context, widget.services, favorite);
 
+  Future<void> _rename(CloudFavorite favorite) async {
+    final name = await askText(
+      context,
+      '自定义收藏名称',
+      initial: favorite.customName,
+      hint: '最多 80 字，留空恢复原名称',
+    );
+    if (name == null || !mounted) return;
+    await busy(
+      context,
+      () => widget.services.favorites.rename(favorite.id, name),
+    );
+  }
+
   @override
   Widget build(BuildContext context) => PageFrame(
     title: '网盘收藏',
@@ -71,6 +86,7 @@ class _CloudFavoritesPageState extends State<CloudFavoritesPage> {
                   (widget.accountId == null ||
                       widget.accountId == f.session.accountId) &&
                   (query.isEmpty ||
+                      f.name.toLowerCase().contains(query) ||
                       f.file.name.toLowerCase().contains(query) ||
                       (f.isShareLink &&
                           (f.session.sourceLink?.url.toLowerCase().contains(
@@ -129,7 +145,7 @@ class _CloudFavoritesPageState extends State<CloudFavoritesPage> {
                                     directory: favorite.file.isDirectory,
                                   ),
                             title: Text(
-                              favorite.file.name,
+                              favorite.name,
                               maxLines: 2,
                               overflow: TextOverflow.ellipsis,
                             ),
@@ -140,20 +156,33 @@ class _CloudFavoritesPageState extends State<CloudFavoritesPage> {
                             ),
                             isThreeLine: true,
                             onTap: () => _open(favorite),
-                            trailing: IconButton(
-                              tooltip: '取消收藏',
-                              icon: const Icon(
-                                CupertinoIcons.star_fill,
-                                color: Color(0xffe6a23c),
-                                size: 21,
-                              ),
-                              onPressed: () async {
-                                await busy(
-                                  context,
-                                  () => widget.services.favorites.remove(
-                                    favorite.id,
-                                  ),
-                                );
+                            trailing: AppPopupMenuButton<String>(
+                              tooltip: '${favorite.name}的收藏操作',
+                              icon: CupertinoIcons.ellipsis,
+                              actions: const [
+                                AppMenuAction(
+                                  value: 'rename',
+                                  label: '自定义名称',
+                                  icon: CupertinoIcons.pencil,
+                                ),
+                                AppMenuAction(
+                                  value: 'remove',
+                                  label: '取消收藏',
+                                  icon: CupertinoIcons.star_slash,
+                                ),
+                              ],
+                              onSelected: (action) async {
+                                if (action == 'rename') {
+                                  await _rename(favorite);
+                                } else if (action == 'remove') {
+                                  if (!context.mounted) return;
+                                  await busy(
+                                    context,
+                                    () => widget.services.favorites.remove(
+                                      favorite.id,
+                                    ),
+                                  );
+                                }
                               },
                             ),
                           ),
@@ -286,7 +315,7 @@ class _CloudFavoritesSummaryState extends State<CloudFavoritesSummary> {
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
                               Text(
-                                favorite.file.name,
+                                favorite.name,
                                 maxLines: 2,
                                 overflow: TextOverflow.ellipsis,
                                 style: const TextStyle(fontSize: 13),

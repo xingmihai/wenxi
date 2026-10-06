@@ -295,6 +295,9 @@ func (f *Fetcher) Start() (err error) {
 	}
 	f.initializeReadable()
 	f.totalConnections.Store(int32(len(f.connections)))
+	if limit := fhttp.BaiduConnectionLimit(f.meta.Opts.Extra.(*fhttp.OptsExtra).ConnectionProfile); limit > 0 {
+		f.totalConnections.Store(int32(min(len(f.connections), limit)))
+	}
 	if limit := f.meta.Opts.Extra.(*fhttp.OptsExtra).SpeedLimit; limit > 0 {
 		f.rate = rate.NewLimiter(rate.Limit(limit), 8192)
 	} else {
@@ -375,9 +378,23 @@ func (f *Fetcher) fetch() {
 	f.stopped = make(chan struct{})
 	group, file, stopped := f.eg, f.file, f.stopped
 	connectionErrs := make([]error, len(f.connections))
+	var connectionSlots chan struct{}
+	if limit := fhttp.BaiduConnectionLimit(f.meta.Opts.Extra.(*fhttp.OptsExtra).ConnectionProfile); limit > 0 {
+		// Old checkpoints can contain multiple partially downloaded ranges.
+		// Preserve their bytes while respecting the current route's limit.
+		connectionSlots = make(chan struct{}, limit)
+	}
 	for i := 0; i < len(f.connections); i++ {
 		i := i
 		f.eg.Go(func() error {
+			if connectionSlots != nil {
+				select {
+				case connectionSlots <- struct{}{}:
+					defer func() { <-connectionSlots }()
+				case <-ctx.Done():
+					return ctx.Err()
+				}
+			}
 			err := f.run(i, ctx)
 			// if canceled, fail fast
 			if errors.Is(err, context.Canceled) {
@@ -462,6 +479,7 @@ func (f *Fetcher) run(index int, ctx context.Context) (err error) {
 					resp    *http.Response
 					counted bool
 				)
+				requestRemaining := int64(-1)
 				defer func() {
 					if counted {
 						f.activeConnections.Add(-1)
@@ -490,8 +508,13 @@ func (f *Fetcher) run(index int, ctx context.Context) (err error) {
 					if f.meta.Res.Range {
 						connection.mu.RLock()
 						chunk := connection.Chunk
+						first, last := chunk.Begin+chunk.Downloaded, chunk.End
+						if profile == "baidu_preview" && last-first >= baiduPreviewRequestSize {
+							last = first + baiduPreviewRequestSize - 1
+						}
+						requestRemaining = last - first + 1
 						httpReq.Header.Set(base.HttpHeaderRange,
-							fmt.Sprintf(base.HttpHeaderRangeFormat, chunk.Begin+chunk.Downloaded, chunk.End))
+							fmt.Sprintf(base.HttpHeaderRangeFormat, first, last))
 						connection.mu.RUnlock()
 					} else {
 						connection.mu.Lock()
@@ -539,6 +562,12 @@ func (f *Fetcher) run(index int, ctx context.Context) (err error) {
 				for {
 					n, err := reader.Read(buf)
 					if n > 0 {
+						if requestRemaining >= 0 {
+							if int64(n) > requestRemaining {
+								return NewRequestError(412, "remote range body exceeded requested size")
+							}
+							requestRemaining -= int64(n)
+						}
 						if f.rate != nil {
 							if err := f.rate.WaitN(ctx, n); err != nil {
 								return err
@@ -556,7 +585,7 @@ func (f *Fetcher) run(index int, ctx context.Context) (err error) {
 					if err != nil {
 						if err == io.EOF {
 							connection.mu.RLock()
-							incomplete := (f.meta.Res.Range && connection.Chunk.remain() > 0) || (!f.meta.Res.Range && f.meta.Res.Size > 0 && connection.Chunk.Downloaded != f.meta.Res.Size)
+							incomplete := (f.meta.Res.Range && requestRemaining > 0) || (!f.meta.Res.Range && f.meta.Res.Size > 0 && connection.Chunk.Downloaded != f.meta.Res.Size)
 							connection.mu.RUnlock()
 							if incomplete {
 								return io.ErrUnexpectedEOF
@@ -596,6 +625,11 @@ func (f *Fetcher) run(index int, ctx context.Context) (err error) {
 			// loses its stream: past failures must not consume the new window.
 			attempts = 0
 			connection.setRetryState(false, 0)
+			if f.meta.Res.Range && connection.remaining() > 0 {
+				// A complete preview window is progress, not an interrupted chunk.
+				// Continue from the saved byte offset without adding a connection.
+				continue
+			}
 			break
 		}
 		return
@@ -607,7 +641,7 @@ func (f *Fetcher) run(index int, ctx context.Context) (err error) {
 		}
 
 		// check this connection is completed
-		if !f.meta.Res.Range || !f.helpOtherConnection(connection) {
+		if !f.meta.Res.Range || fhttp.BaiduConnectionLimit(profile) > 0 || !f.helpOtherConnection(connection) {
 			connection.mu.Lock()
 			connection.Completed = true
 			connection.mu.Unlock()

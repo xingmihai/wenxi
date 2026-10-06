@@ -234,14 +234,8 @@ void main() {
       });
       await tester.pumpAndSettle();
       if (platform == CloudPlatform.baidu) {
-        expect(find.text('百度网盘使用提醒'), findsOneWidget);
-        expect(find.textContaining('暂时不推荐使用'), findsOneWidget);
-        expect(find.byType(WebLoginPage), findsNothing);
-        await tester.runAsync(() async {
-          await tester.tap(find.text('继续网页登录'));
-          await Future<void>.delayed(const Duration(milliseconds: 20));
-        });
-        await tester.pumpAndSettle();
+        expect(find.text('百度网盘使用提醒'), findsNothing);
+        expect(find.text('百度网盘下载提示'), findsNothing);
       }
       if (platform == CloudPlatform.xunlei) {
         expect(find.byType(XunleiLoginPage), findsOneWidget);
@@ -250,7 +244,10 @@ void main() {
       } else if (platform == CloudPlatform.pan123 ||
           platform == CloudPlatform.tianyi ||
           platform == CloudPlatform.aliyun ||
-          platform == CloudPlatform.ilanzou) {
+          platform == CloudPlatform.ilanzou ||
+          platform == CloudPlatform.lanzou ||
+          platform == CloudPlatform.ctfile ||
+          platform == CloudPlatform.feijipan) {
         expect(find.byType(NativePasswordLoginPage), findsOneWidget);
         expect(
           tester
@@ -283,39 +280,32 @@ void main() {
     });
   }
 
-  testWidgets(
-    'Baidu warning can be cancelled and repeats on the account button',
-    (tester) async {
-      final http = FakeHttp();
-      final services = await render(
-        tester,
-        const Size(1100, 900),
-        1,
-        loggedIn: false,
-        http: http,
-      );
-      await tester.tap(find.text('百度网盘'));
-      await tester.pumpAndSettle();
-      expect(find.text('百度网盘使用提醒'), findsOneWidget);
-      expect(find.byType(WebLoginPage), findsNothing);
-      await tester.tap(find.text('取消'));
-      await tester.pumpAndSettle();
-      expect(find.byType(WebLoginPage), findsNothing);
-      expect(services.vault.credential(CloudPlatform.baidu), isNull);
-      expect(http.calls, isEmpty);
+  testWidgets('Baidu account button opens web login without a warning', (
+    tester,
+  ) async {
+    final http = FakeHttp();
+    final services = await render(
+      tester,
+      const Size(1100, 900),
+      1,
+      loggedIn: false,
+      http: http,
+    );
+    await tester.runAsync(() async {
       await tester.tap(find.byTooltip('百度网盘账号操作'));
-      await tester.pumpAndSettle();
-      expect(find.text('百度网盘使用提醒'), findsOneWidget);
-      Navigator.of(tester.element(find.byType(AlertDialog))).pop();
-      await tester.pumpAndSettle();
-      expect(find.byType(WebLoginPage), findsNothing);
-      expect(tester.takeException(), isNull);
-      await tester.pumpWidget(const SizedBox());
-    },
-  );
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+    });
+    await tester.pumpAndSettle();
+    expect(find.text('百度网盘使用提醒'), findsNothing);
+    expect(find.byType(WebLoginPage), findsOneWidget);
+    expect(services.vault.credential(CloudPlatform.baidu), isNull);
+    expect(http.calls, isEmpty);
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox());
+  });
 
   testWidgets(
-    'Baidu re-login warns once and cancellation preserves the current account',
+    'Baidu re-login opens directly and backing out preserves the current account',
     (tester) async {
       final services = await render(
         tester,
@@ -329,8 +319,9 @@ void main() {
       expect(find.text('百度网盘使用提醒'), findsNothing);
       await tester.tap(find.text('重新登录当前账号'));
       await tester.pumpAndSettle();
-      expect(find.text('百度网盘使用提醒'), findsOneWidget);
-      await tester.tap(find.text('取消'));
+      expect(find.text('百度网盘使用提醒'), findsNothing);
+      expect(find.byType(WebLoginPage), findsOneWidget);
+      Navigator.of(tester.element(find.byType(WebLoginPage))).pop();
       await tester.pumpAndSettle();
       expect(
         services.vault.credential(CloudPlatform.baidu)?.toJson(),
@@ -358,7 +349,13 @@ void main() {
         const Offset(0, -180),
       );
       await tester.pumpAndSettle();
-      expect(find.text('网页登录管理文件 · 分享免登录'), findsOneWidget);
+      final lanzouCard = find
+          .ancestor(of: find.text('蓝奏云'), matching: find.byType(InkWell))
+          .first;
+      expect(
+        find.descendant(of: lanzouCard, matching: find.text('未登录')),
+        findsOneWidget,
+      );
       expect(find.byTooltip('蓝奏云账号操作'), findsOneWidget);
       await tester.tap(find.byTooltip('蓝奏云解析'));
       await tester.pumpAndSettle();
@@ -683,6 +680,8 @@ void main() {
       final http = FakeHttp(
         (r) => r.uri.path.endsWith('/quota')
             ? jsonResponse({'errno': 0, 'used': 25, 'total': 100})
+            : r.uri.path.endsWith('/list')
+            ? jsonResponse({'errno': 0, 'list': []})
             : jsonResponse({
                 'errno': 0,
                 'result': {'username': '百度测试用户'},
@@ -1110,7 +1109,11 @@ void main() {
     ]) {
       await tester.tap(find.byTooltip('排序'));
       await tester.pumpAndSettle();
+      // Settings now persist in the fixture's real event loop. Await the save
+      // before checking the rendered order or selecting the next sort key.
       await tester.tap(find.text(label));
+      await tester.pumpAndSettle();
+      await tester.runAsync(() => services.store.flush());
       await tester.pumpAndSettle();
       expectOrder([...folders, ...files]);
       await tester.tap(find.byTooltip('排序'));
@@ -1272,35 +1275,19 @@ void main() {
     expect(services.downloads.tasks.length, 2);
     expect(tester.takeException(), isNull);
   });
-  testWidgets('Narrow cloud list hides unavailable drives through scrolling', (
+  testWidgets('Narrow cloud list keeps every supported drive reachable', (
     tester,
   ) async {
     await render(tester, const Size(320, 700), 1, scale: 1.6);
     expect(find.text('夸克网盘'), findsOneWidget);
     expect(find.text('123网盘'), findsOneWidget);
-    final seen = <String>{};
-    for (var page = 0; page < 5; page++) {
-      for (final title in ['光鸭云盘', '阿里云盘']) {
-        if (find.text(title).evaluate().isNotEmpty) seen.add(title);
-      }
-      for (final title in ['微云网盘']) {
-        expect(find.text(title), findsNothing);
-        expect(find.byTooltip('$title账号操作'), findsNothing);
-      }
-      expect(find.text('暂未开放'), findsNothing);
-      await tester.drag(
-        find.byKey(const PageStorageKey('cloud-list')),
-        const Offset(0, -400),
-      );
+    for (final (_, title, _) in cloudEntries) {
+      await tester.scrollUntilVisible(find.text(title), 250);
       await tester.pumpAndSettle();
+      expect(find.text(title), findsOneWidget);
+      expect(find.byTooltip('$title账号操作'), findsOneWidget);
+      expect(find.text('暂未开放'), findsNothing);
     }
-    expect(seen, containsAll(['光鸭云盘', '阿里云盘']));
-    expect(find.text('天翼网盘'), findsOneWidget);
-    expect(find.text('蓝奏云'), findsOneWidget);
-    expect(
-      tester.getTopLeft(find.text('蓝奏云')).dy,
-      greaterThan(tester.getTopLeft(find.text('天翼网盘')).dy),
-    );
     expect(find.text('网盘列表'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });

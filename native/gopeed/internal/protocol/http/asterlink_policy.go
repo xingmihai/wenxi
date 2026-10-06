@@ -8,15 +8,25 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	fhttp "github.com/GopeedLab/gopeed/pkg/protocol/http"
 )
 
 const minRangeSize int64 = 256 * 1024
 const quarkRangeSize int64 = 64 * 1024
 const aliyunConnections = 8
 
+// Baidu's preview CDN accepts bounded reads but can reject a whole-file Range
+// with 403/31326. Read consecutive windows on the existing single connection;
+// checkpoint chunks continue to describe file ownership, not HTTP requests.
+const baiduPreviewRequestSize int64 = 8 * 1024 * 1024
+
 func effectiveConnections(size int64, configured int, profile string) int {
-	if size <= 0 {
+	if size <= 0 || profile == "baidu" {
 		return 1
+	}
+	if limit := fhttp.BaiduConnectionLimit(profile); limit > 0 {
+		configured = min(configured, limit)
 	}
 	minimum := minRangeSize
 	if profile == "aliyun" {

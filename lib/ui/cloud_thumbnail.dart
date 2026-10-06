@@ -54,6 +54,7 @@ class CloudThumbnail extends StatelessWidget {
       ),
     );
     final referer = switch (platform) {
+      CloudPlatform.feijipan => 'https://www.feijipan.com/',
       CloudPlatform.ctfile => 'https://www.ctfile.com/',
       CloudPlatform.pan115 => 'https://115.com/',
       CloudPlatform.baidu => 'https://pan.baidu.com/',

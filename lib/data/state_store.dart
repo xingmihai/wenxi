@@ -3,20 +3,45 @@ import 'dart:convert';
 import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+import 'package:flutter/services.dart';
 import '../core/crypto_box.dart';
 import '../core/json.dart';
 import '../domain/models.dart';
+import 'state_key.dart';
 
 Uint8List _encryptSnapshot((Uint8List, String) args) =>
     CryptoBox.seal(args.$1, utf8.encode(args.$2));
 Json _decryptSnapshot((Uint8List, Uint8List) args) =>
     asJson(jsonDecode(utf8.decode(CryptoBox.open(args.$1, args.$2))));
 
+enum StateRecoveryCause {
+  missingKey,
+  invalidKey,
+  unreadableData,
+  secureStorageUnavailable,
+}
+
+class StateRecoveryRequired extends AppException {
+  const StateRecoveryRequired(this.directory, this.cause)
+    : super(
+        cause == StateRecoveryCause.secureStorageUnavailable
+            ? '暂时无法访问系统安全存储，请先解锁设备后重试。原文件已保留，也可以尝试下方的恢复方式。'
+            : '本地账号和设置暂时无法读取，原文件已保留。可以尝试下方的恢复方式。',
+      );
+  final Directory directory;
+  final StateRecoveryCause cause;
+}
+
 /// No plaintext accounts, cookies or signed URLs are written to state files.
 class StateStore extends ChangeNotifier {
-  StateStore._(this.file, this._key, this._data);
+  static const keyName = LocalStateKey.name;
+  static const secureStorage = FlutterSecureStorage(
+    aOptions: LocalStateKey.options,
+  );
+  StateStore._(this.file, this._key, this._data, [this._localKey]);
   final File? file;
   final Uint8List _key;
+  final LocalStateKey? _localKey;
   Json _data;
   final _gate = AsyncGate();
   final _notificationZone = Zone.current;
@@ -25,31 +50,34 @@ class StateStore extends ChangeNotifier {
   static Future<StateStore> open(
     Directory directory, {
     Uint8List? testKey,
+    FlutterSecureStorage storage = secureStorage,
   }) async {
     await directory.create(recursive: true);
     final file = File('${directory.path}${Platform.pathSeparator}state-v1.enc');
     final backup = File('${file.path}.bak');
     final pending = File('${file.path}.tmp');
-    Uint8List? key = testKey;
-    if (key == null) {
-      const storage = FlutterSecureStorage();
-      final saved = await storage.read(key: 'asterlink.flutter.state-key.v1');
-      if (saved != null) {
-        key = base64Decode(saved);
-      } else {
-        require(
-          !await file.exists() &&
-              !await backup.exists() &&
-              !await pending.exists(),
-          '本地加密密钥缺失，请恢复备份；原文件已保留',
-        );
-        key = CryptoBox.random(32);
-        await storage.write(
-          key: 'asterlink.flutter.state-key.v1',
-          value: base64Encode(key),
-        );
+    final localKey = testKey == null ? LocalStateKey(directory, storage) : null;
+    final saved = await localKey?.read();
+    final keys = testKey != null ? [testKey] : saved!.keys;
+    if (keys.isEmpty) {
+      final cause = saved!.unavailable
+          ? StateRecoveryCause.secureStorageUnavailable
+          : saved.invalid
+          ? StateRecoveryCause.invalidKey
+          : StateRecoveryCause.missingKey;
+      if (saved.unavailable ||
+          saved.invalid ||
+          await file.exists() ||
+          await backup.exists() ||
+          await pending.exists() ||
+          await localKey!.canUnlock()) {
+        throw StateRecoveryRequired(directory, cause);
       }
+      final generated = CryptoBox.random(32);
+      await localKey.save(generated);
+      keys.add(generated);
     }
+    Uint8List key = keys.first;
     Json data = {};
     final candidates = [file, backup, pending];
     var found = false;
@@ -57,16 +85,22 @@ class StateStore extends ChangeNotifier {
     for (final candidate in candidates) {
       if (!await candidate.exists()) continue;
       found = true;
-      try {
-        data = await compute(_decryptSnapshot, (
-          key,
-          await candidate.readAsBytes(),
-        ));
-      } on AppException {
-        continue;
-      } on FormatException {
-        continue;
+      final bytes = await candidate.readAsBytes();
+      Json? decoded;
+      // Try every key against the newest snapshot before considering older data.
+      for (final candidateKey in keys) {
+        try {
+          decoded = await compute(_decryptSnapshot, (candidateKey, bytes));
+          key = candidateKey;
+          break;
+        } on AppException {
+          continue;
+        } on FormatException {
+          continue;
+        }
       }
+      if (decoded == null) continue;
+      data = decoded;
       require(data.integer('schema', 1) == 1, '本地数据来自更新版本，请更新应用');
       // Repair the primary before accepting edits. A corrupt primary must never
       // replace the sole authenticated backup during the next commit.
@@ -83,8 +117,22 @@ class StateStore extends ChangeNotifier {
       recovered = true;
       break;
     }
-    require(!found || recovered, '无法解密本地数据，原文件已保留，请从备份恢复');
-    return StateStore._(file, key, data);
+    if (found && !recovered) {
+      throw StateRecoveryRequired(directory, StateRecoveryCause.unreadableData);
+    }
+    if (!found && localKey != null && await localKey.canUnlock()) {
+      throw StateRecoveryRequired(directory, StateRecoveryCause.unreadableData);
+    }
+    if (recovered && saved?.needsRepair(key) == true) {
+      try {
+        await localKey!.save(key);
+      } on PlatformException {
+        // Authenticated data is usable even while a secure write is unavailable.
+      } on AppException {
+        // Keep the usable record; explicit password recovery can rebind storage.
+      }
+    }
+    return StateStore._(file, key, data, localKey);
   }
 
   factory StateStore.memory([Json? data]) => StateStore._(
@@ -93,21 +141,80 @@ class StateStore extends ChangeNotifier {
     asJson(jsonDecode(jsonEncode(data ?? {}))),
   );
 
-  Future<T> change<T>(T Function(Json draft) edit) => _gate.run(() async {
+  Future<T> change<T>(
+    T Function(Json draft) edit, {
+    String? recoveryPassword,
+  }) => _gate.run(() async {
     final draft = asJson(jsonDecode(jsonEncode(_data)));
     final result = edit(draft);
     draft['schema'] = 1;
     if (file != null) {
-      final bytes = await compute(_encryptSnapshot, (_key, jsonEncode(draft)));
-      final temporary = File('${file!.path}.tmp');
-      final backup = File('${file!.path}.bak');
-      await temporary.writeAsBytes(bytes, flush: true);
-      // Keep one previous authenticated snapshot until the next successful commit.
-      if (await file!.exists()) {
-        if (await backup.exists()) await backup.delete();
-        await file!.rename(backup.path);
+      final protectedImport = recoveryPassword != null && _localKey != null;
+      final originals = <String, Uint8List?>{};
+      if (protectedImport) {
+        // The imported backup never supplies a device key. Its password wraps
+        // this device's existing key, which also decrypts all later edits.
+        for (final path in [
+          file!.path,
+          '${file!.path}.bak',
+          '${file!.path}.tmp',
+          for (final name in LocalStateKey.sidecars)
+            _localKey.localFile(name).path,
+        ]) {
+          final original = File(path);
+          originals[path] = await original.exists()
+              ? await original.readAsBytes()
+              : null;
+        }
       }
-      await temporary.rename(file!.path);
+      try {
+        Uint8List? envelope;
+        if (protectedImport) {
+          envelope = await _localKey.prepareRecovery(_key, recoveryPassword);
+          await _localKey.saveFresh(_key);
+        }
+        final bytes = await compute(_encryptSnapshot, (
+          _key,
+          jsonEncode(draft),
+        ));
+        final temporary = File('${file!.path}.tmp');
+        final backup = File('${file!.path}.bak');
+        await temporary.writeAsBytes(bytes, flush: true);
+        // Keep one previous authenticated snapshot until the next successful commit.
+        if (await file!.exists()) {
+          if (await backup.exists()) await backup.delete();
+          await file!.rename(backup.path);
+        }
+        await temporary.rename(file!.path);
+        if (protectedImport) {
+          final reopened = await compute(_decryptSnapshot, (
+            _key,
+            await file!.readAsBytes(),
+          ));
+          require(jsonEncode(reopened) == jsonEncode(draft), '导入后的数据保存校验失败');
+          // A stopped import can still use the previous recovery password:
+          // change it only after the new state is safely on disk.
+          await _localKey.installRecovery(envelope!);
+        }
+      } catch (error, stack) {
+        if (protectedImport) {
+          try {
+            for (final entry in originals.entries) {
+              final target = File(entry.key);
+              if (entry.value != null) {
+                final rollback = File('${target.path}.rollback');
+                await rollback.writeAsBytes(entry.value!, flush: true);
+                await rollback.rename(target.path);
+              } else if (await target.exists()) {
+                await target.delete();
+              }
+            }
+          } catch (_) {
+            throw const AppException('导入未完成，请勿清除数据；重新打开应用后检查恢复提示');
+          }
+        }
+        Error.throwWithStackTrace(error, stack);
+      }
     }
     _data = draft;
     _notificationZone.run(notifyListeners);
@@ -117,6 +224,27 @@ class StateStore extends ChangeNotifier {
     draft[key] = value;
   });
   Future<void> flush() => _gate.run(() async {});
+
+  /// Password recovery must authenticate the current data, never silently pick
+  /// an older backup encrypted with a different key.
+  static Future<void> validateRecoveryKey(
+    Directory directory,
+    Uint8List key,
+  ) async {
+    for (final suffix in ['', '.tmp', '.bak']) {
+      final file = File(
+        '${directory.path}${Platform.pathSeparator}state-v1.enc$suffix',
+      );
+      if (!await file.exists()) continue;
+      final data = await compute(_decryptSnapshot, (
+        key,
+        await file.readAsBytes(),
+      ));
+      require(data.integer('schema', 1) == 1, '本地数据来自更新版本，请更新应用');
+      return;
+    }
+    throw const AppException('本地数据文件不存在，请使用备份文件恢复');
+  }
 }
 
 abstract class CredentialStore {

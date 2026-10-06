@@ -14,6 +14,7 @@ import 'native_login_support.dart';
 import 'support.dart';
 import 'token_cloud_support.dart';
 import 'xunlei_login_support.dart';
+import 'lanzou_password_support.dart';
 
 class GestureCaptcha extends TianyiCaptchaClient {
   GestureCaptcha(int type, {required super.cancel})
@@ -134,6 +135,75 @@ void main() {
   }
 
   for (final size in [const Size(393, 852), const Size(1280, 800)]) {
+    testWidgets(
+      'Lanzou opens password login and remembers the account at $size',
+      (tester) async {
+        final fixture = LanzouPasswordFixture();
+        final services = await render(
+          tester,
+          CloudPlatform.lanzou,
+          fixture.http,
+          size: size,
+        );
+        expect(find.text('账号密码登录'), findsOneWidget);
+        expect(find.byKey(const ValueKey('native-login-web')), findsOneWidget);
+        final manual = find.byKey(const ValueKey('native-login-manual'));
+        await tester.ensureVisible(manual);
+        await tester.tap(manual);
+        await tester.pumpAndSettle();
+        expect(find.byType(ManualLoginPage), findsOneWidget);
+        final back = find.byKey(const ValueKey('manual-login-password'));
+        await tester.ensureVisible(back);
+        await tester.tap(back);
+        await tester.pumpAndSettle();
+        await fill(tester);
+        final submit = find.byKey(const ValueKey('native-login-submit'));
+        await tester.ensureVisible(submit);
+        await tester.runAsync(() async {
+          await tester.tap(submit);
+          await until(
+            () => services.vault.credential(CloudPlatform.lanzou) != null,
+          );
+        });
+        await tester.pumpAndSettle();
+        final accountId = services.vault.activeAccountId(CloudPlatform.lanzou);
+        final saved = services.vault.credential(CloudPlatform.lanzou)!;
+        expect(saved.field('username'), 'fixture-user');
+        expect(saved.field('password'), ' SamplePassword! ');
+        expect(find.byType(PasswordLoginFlow), findsNothing);
+        await tester.runAsync(() async {
+          await tester.tap(find.text('打开登录'));
+        });
+        await tester.pumpAndSettle();
+        final username = tester.widget<TextFormField>(
+          find.byKey(const ValueKey('native-login-username')),
+        );
+        expect(username.controller!.text, 'fixture-user');
+        fixture.cookie = 'renewed-cookie';
+        await tester.ensureVisible(submit);
+        await tester.runAsync(() async {
+          await tester.tap(submit);
+          await until(
+            () => services.vault
+                .credential(CloudPlatform.lanzou)!
+                .primary
+                .contains('renewed-cookie'),
+          );
+        });
+        await tester.pumpAndSettle();
+        expect(services.vault.activeAccountId(CloudPlatform.lanzou), accountId);
+        expect(services.vault.profiles(CloudPlatform.lanzou), hasLength(1));
+        ScaffoldMessenger.of(
+          tester.element(find.text('打开登录')),
+        ).clearSnackBars();
+        await tester.pumpAndSettle();
+        // The login callback runs in the real IO zone. Drain its snackbar
+        // animation completion before the test tears down the messenger.
+        await tester.runAsync(() => Future<void>.delayed(Duration.zero));
+        expect(tester.takeException(), isNull);
+      },
+    );
+
     testWidgets('Ctfile password and manual login work at $size', (
       tester,
     ) async {
@@ -587,6 +657,73 @@ void main() {
     },
   );
 
+  testWidgets(
+    'Feijipan password login keeps the verified account and remembers the form',
+    (tester) async {
+      final http = LoginHttp(
+        (r) => switch (r.uri.path) {
+          '/ws/getUuid' => jsonResponse({
+            'code': 200,
+            'uuid': 'fixture-device-12345678',
+          }),
+          '/ws/login' => jsonResponse({
+            'code': 200,
+            'data': {'appToken': accessToken},
+          }),
+          '/app/user/account/map' => jsonResponse({
+            'code': 200,
+            'map': {'userId': 123, 'account': 'fixture123', 'totalSize': 1000},
+          }),
+          '/app/user/info/map' => jsonResponse({
+            'code': 200,
+            'map': {'userId': 123, 'userName': '小飞机测试账号'},
+          }),
+          _ => throw StateError('Unexpected Feijipan password request'),
+        },
+      );
+      final services = await render(tester, CloudPlatform.feijipan, http);
+      expect(find.text('小飞机登录'), findsOneWidget);
+      expect(find.byType(NativePasswordLoginPage), findsOneWidget);
+      await fill(tester);
+      await tester.runAsync(() async {
+        await tester.tap(find.byKey(const ValueKey('native-login-submit')));
+        await until(
+          () => services.vault.credential(CloudPlatform.feijipan) != null,
+        );
+      });
+      await tester.pumpAndSettle();
+      final saved = services.vault.credential(CloudPlatform.feijipan)!;
+      expect(saved.field('userId'), '123');
+      expect(saved.field('nickname'), '小飞机测试账号');
+      expect(saved.field('password'), ' SamplePassword! ');
+      await tester.tap(find.text('打开登录'));
+      await tester.runAsync(
+        () => Future<void>.delayed(const Duration(milliseconds: 20)),
+      );
+      await tester.pumpAndSettle();
+      expect(
+        tester
+            .widget<TextFormField>(
+              find.byKey(const ValueKey('native-login-username')),
+            )
+            .controller!
+            .text,
+        saved.field('username'),
+      );
+      expect(
+        tester
+            .widget<TextFormField>(
+              find.byKey(const ValueKey('native-login-password')),
+            )
+            .controller!
+            .text,
+        saved.field('password'),
+      );
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
+
   for (final platform in [
     CloudPlatform.pan123,
     CloudPlatform.tianyi,
@@ -788,6 +925,8 @@ void main() {
 
   for (final platform in [
     CloudPlatform.pan123,
+    CloudPlatform.lanzou,
+    CloudPlatform.feijipan,
     CloudPlatform.tianyi,
     CloudPlatform.xunlei,
   ]) {

@@ -41,7 +41,7 @@ class _FileTimeConnector extends BrowserTestConnector {
 }
 
 class _WaitingDownloadConnector extends BrowserTestConnector {
-  _WaitingDownloadConnector() : super(CloudPlatform.tianyi);
+  _WaitingDownloadConnector([super.drive = CloudPlatform.tianyi]);
   int preparing = 0;
   @override
   Future<DownloadSpec> download(
@@ -102,6 +102,50 @@ void main() {
     await tester.tap(find.text(name));
     await tester.runAsync(() => Future<void>.delayed(Duration.zero));
     await tester.pumpAndSettle();
+  }
+
+  for (final mode in [BrowseMode.personal, BrowseMode.share]) {
+    browserTest('Baidu $mode download waits for confirmation before enqueue', (
+      tester,
+    ) async {
+      final value = await fixture(tester, platform: CloudPlatform.baidu);
+      final connector = _WaitingDownloadConnector(CloudPlatform.baidu);
+      value.services.cloud.connectors[CloudPlatform.baidu] = connector;
+      await value.render(
+        tester,
+        session: BrowseSession(
+          platform: CloudPlatform.baidu,
+          mode: mode,
+          title: '百度测试',
+          rootId: 'personal-root',
+        ),
+      );
+      Future<void> request() async {
+        await tester.tap(find.byTooltip('使用说明.txt操作'));
+        await tester.pumpAndSettle();
+        await tester.tap(find.text('下载'));
+        await tester.pumpAndSettle();
+      }
+
+      await request();
+      expect(find.text('百度网盘下载提示'), findsOneWidget);
+      expect(value.services.downloads.tasks, isEmpty);
+      expect(connector.preparing, 0);
+      await tester.tapAt(const Offset(2, 2));
+      await tester.pumpAndSettle();
+      expect(find.text('百度网盘下载提示'), findsOneWidget);
+      await tester.tap(find.text('取消'));
+      await tester.pumpAndSettle();
+      expect(value.services.downloads.tasks, isEmpty);
+      await request();
+      await tester.tap(find.text('继续下载'));
+      await tester.runAsync(
+        () => until(() => value.services.downloads.tasks.isNotEmpty),
+      );
+      await tester.pumpAndSettle();
+      expect(value.services.downloads.tasks, hasLength(1));
+      expect(value.services.settings.hideBaiduDownloadNotice, isFalse);
+    });
   }
 
   browserTest('Lanzou share dialog defaults to permanent validity', (
@@ -246,6 +290,68 @@ void main() {
     },
   );
 
+  for (final view in ['list', 'grid']) {
+    browserTest('Visible multi-select supports empty selection in $view', (
+      tester,
+    ) async {
+      final value = await fixture(tester, view: view);
+      await value.render(tester);
+      expect(find.text('多选'), findsOneWidget);
+      await tester.tap(find.text('多选'));
+      await tester.pumpAndSettle();
+      expect(find.text('已选 0 项'), findsOneWidget);
+      final download = find.widgetWithText(TextButton, '下载');
+      expect(tester.widget<TextButton>(download).onPressed, isNull);
+      final reads = value.connector.reads.length;
+      await tester.tap(find.text('假期相册'));
+      await tester.pumpAndSettle();
+      expect(find.text('已选 1 项'), findsOneWidget);
+      expect(value.connector.reads, hasLength(reads));
+      await tester.tap(find.text('假期相册'));
+      await tester.pumpAndSettle();
+      expect(find.text('已选 0 项'), findsOneWidget);
+      expect(find.text('完成'), findsOneWidget);
+      await tester.tap(find.text('全选'));
+      await tester.pumpAndSettle();
+      expect(find.text('已选 6 项'), findsOneWidget);
+      await tester.tap(find.text('取消全选'));
+      await tester.pumpAndSettle();
+      expect(find.text('已选 0 项'), findsOneWidget);
+      await tester.binding.handlePopRoute();
+      await tester.pumpAndSettle();
+      expect(find.text('多选'), findsOneWidget);
+      expect(find.text('已选 0 项'), findsNothing);
+      await tester.tap(find.text('假期相册'));
+      await tester.pumpAndSettle();
+      expect(value.connector.reads.last.$2, 'photos');
+      expect(tester.takeException(), isNull);
+    });
+  }
+
+  browserTest('Select all tracks visible files after a search changes', (
+    tester,
+  ) async {
+    final value = await fixture(tester);
+    await value.render(tester);
+    await tester.tap(find.text('多选'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('假期相册'));
+    await tester.enterText(find.byType(TextField), '工作');
+    await tester.pumpAndSettle();
+    expect(find.text('全选'), findsOneWidget);
+    await tester.tap(find.text('全选'));
+    await tester.pumpAndSettle();
+    expect(find.text('已选 2 项'), findsOneWidget);
+    await tester.tap(find.text('取消全选'));
+    await tester.pumpAndSettle();
+    expect(find.text('已选 1 项'), findsOneWidget);
+    await tester.tap(find.text('完成'));
+    await tester.pumpAndSettle();
+    expect(find.text('多选'), findsOneWidget);
+    expect(find.text('已选 1 项'), findsNothing);
+    expect(tester.takeException(), isNull);
+  });
+
   browserTest(
     'Grid selection and sorting survive display changes and the preference reopens',
     (tester) async {
@@ -254,7 +360,14 @@ void main() {
       expect(find.byType(GridView), findsNothing);
       await setView(tester, '大图标');
       expect(find.byType(GridView), findsOneWidget);
-      expect(value.services.settings.browserView, 'grid');
+      expect(
+        value.services.settings.browserDisplayFor(CloudPlatform.tianyi).view,
+        'grid',
+      );
+      expect(
+        value.services.settings.browserDisplayFor(CloudPlatform.quark).view,
+        'list',
+      );
       final folderPosition = tester.getTopLeft(find.text('假期相册'));
       final photoPosition = tester.getTopLeft(find.text('01 海边照片.jpg'));
       expect(folderPosition.dy, lessThan(photoPosition.dy));
@@ -270,11 +383,24 @@ void main() {
       await tester.pumpAndSettle();
       await tester.tap(find.text('大小'));
       await tester.pumpAndSettle();
+      await tester.tap(find.byTooltip('排序'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('大小'));
+      await tester.pumpAndSettle();
       final grid = tester.widget<GridView>(find.byType(GridView));
       expect(grid.semanticChildCount, 6);
       await tester.pumpWidget(const SizedBox.shrink());
       await value.render(tester);
       expect(find.byType(GridView), findsOneWidget);
+      await tester.tap(find.byTooltip('排序'));
+      await tester.pumpAndSettle();
+      expect(find.text('↓ 降序'), findsOneWidget);
+      expect(
+        value.services.settings.browserDisplayFor(CloudPlatform.tianyi).sort,
+        'size',
+      );
+      await tester.tap(find.text('大小'));
+      await tester.pumpAndSettle();
       expect(find.text('已选 1 项'), findsNothing);
       expect(tester.takeException(), isNull);
     },
@@ -500,6 +626,10 @@ void main() {
       expect(tester.takeException(), isNull);
       await tester.drag(find.byType(GridView), const Offset(0, -180));
       await tester.pumpAndSettle();
+      expect(tester.takeException(), isNull);
+      await tester.tap(find.text('多选'));
+      await tester.pumpAndSettle();
+      expect(find.text('已选 0 项'), findsOneWidget);
       expect(tester.takeException(), isNull);
     });
   }

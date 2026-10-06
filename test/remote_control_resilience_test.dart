@@ -16,11 +16,11 @@ class _UnreliableStore implements StateStore {
   @override
   Json get data => backing.data;
   @override
-  Future<T> change<T>(T Function(Json) edit) async {
+  Future<T> change<T>(T Function(Json) edit, {String? recoveryPassword}) async {
     writes++;
     await gate?.future;
     if (fail) throw StateError('disk unavailable');
-    return backing.change(edit);
+    return backing.change(edit, recoveryPassword: recoveryPassword);
   }
 
   @override
