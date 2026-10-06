@@ -42,7 +42,8 @@ enum CloudPlatform {
     '400gb.com',
     '545c.com',
     'pipipan.com',
-  ]);
+  ]),
+  feijipan('Feijipan', '小飞机网盘', '小飞机', 'feijipan', ['feijipan.com']);
 
   const CloudPlatform(
     this.key,
@@ -59,12 +60,21 @@ enum CloudPlatform {
       this == tianyi || this == c139 || this == wopan;
   bool get supportsPersonalSpaces => this == aliyun || this == ctfile;
   bool get supportsShareParsing => this != ilanzou && this != weiyun;
-  bool get shareRequiresAccount =>
-      !{lanzou, guangya, aliyun, wopan, quark, uc, ctfile}.contains(this);
+  bool get shareRequiresAccount => !{
+    lanzou,
+    guangya,
+    aliyun,
+    wopan,
+    quark,
+    uc,
+    ctfile,
+    feijipan,
+  }.contains(this);
   bool get supportsSharing =>
       this != ilanzou && this != weiyun && this != wopan;
   String get shareUnavailableMessage => '$label暂不支持分享解析，请在网盘页登录后浏览个人文件';
-  bool get exactFileSize => this != ilanzou && this != lanzou;
+  bool get exactFileSize =>
+      this != ilanzou && this != lanzou && this != feijipan;
   // MoePal's share classifier accepts these domain families, not a fixed list
   // of aliases. Use the same rule for pasted links and share-page redirects.
   static const subdomainHostPattern = r'(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)*';

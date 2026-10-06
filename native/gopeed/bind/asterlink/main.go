@@ -246,7 +246,7 @@ func Begin(value string) error {
 					return nil
 				}
 				req.Labels["asterlinkGeneration"] = task.Meta.Req.Labels["asterlinkGeneration"]
-				if err = core.ReplacePausedRequest(taskID, req); err != nil {
+				if err = core.ReplacePausedRequest(taskID, req, input.ConnectionProfile); err != nil {
 					return err
 				}
 				stateMu.Lock()

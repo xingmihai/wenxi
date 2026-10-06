@@ -104,7 +104,7 @@ void main() {
       f.current = RemoteUpdate(
         '1.2.0',
         120,
-        Uri.parse('https://share.feijipan.com/s/browser'),
+        Uri.parse('https://downloads.example.test/browser'),
         '',
       );
       expect(await f.service.start(f.current!), isFalse);

@@ -18,6 +18,7 @@ import 'data/remote_control_service.dart';
 import 'data/app_update_service.dart';
 import 'data/github_update_service.dart';
 import 'data/providers/uc.dart';
+import 'data/providers/baidu.dart';
 import 'data/providers/quark.dart';
 import 'data/providers/pan123.dart';
 import 'data/providers/tianyi.dart';
@@ -42,6 +43,7 @@ import 'platform/windows_actions.dart';
 import 'data/providers/ilanzou.dart';
 import 'data/providers/lanzou.dart';
 import 'data/providers/ctfile.dart';
+import 'data/providers/feijipan.dart';
 import 'data/providers/weiyun.dart';
 import 'data/providers/wopan.dart';
 import 'data/providers/pan115.dart';
@@ -113,8 +115,14 @@ class AppServices extends ChangeNotifier {
       (p, c) => cloud.connector(p).account(c),
       checkAccess: control.checkCloud,
       webAuthenticators: {
+        CloudPlatform.baidu:
+            (cloud.connector(CloudPlatform.baidu) as BaiduConnector)
+                .authenticate,
         CloudPlatform.ctfile:
             (cloud.connector(CloudPlatform.ctfile) as CtfileConnector)
+                .authenticate,
+        CloudPlatform.feijipan:
+            (cloud.connector(CloudPlatform.feijipan) as FeijipanConnector)
                 .authenticate,
         CloudPlatform.lanzou:
             (cloud.connector(CloudPlatform.lanzou) as LanzouConnector)
@@ -155,11 +163,22 @@ class AppServices extends ChangeNotifier {
     );
     favorites = CloudFavorites(store, cloud);
     backup = BackupRepository(store);
+    final engineGeneration = store.data.str('engineStorageGeneration');
+    require(
+      engineGeneration.isEmpty ||
+          RegExp(r'^[a-f0-9]{32}$').hasMatch(engineGeneration),
+      '下载组件存储配置无效，原文件已保留',
+    );
     engine = GopeedEngine(
       transport,
       store,
       vault,
-      Directory(p.join(dataDirectory.path, 'gopeed')),
+      Directory(
+        p.join(
+          dataDirectory.path,
+          engineGeneration.isEmpty ? 'gopeed' : 'gopeed-$engineGeneration',
+        ),
+      ),
       cacheDirectory,
     );
     transfer = transferHttp ?? TransferHttp();
@@ -538,9 +557,40 @@ class AppServices extends ChangeNotifier {
   }
 
   Future<void> updateSettings(Json changes) async {
-    await store.put('settings', settings.update(changes).toJson());
+    await store.change((draft) {
+      draft['settings'] = AppSettings.fromJson(
+        draft.obj('settings'),
+      ).update(changes).toJson();
+    });
     await downloads.settingsChanged();
   }
+
+  Future<void> updateBrowserDisplay(
+    CloudPlatform platform, {
+    String? view,
+    String? sort,
+  }) => store.change((draft) {
+    require(view == null || ['list', 'grid'].contains(view), '显示方式无效');
+    require(sort == null || ['name', 'size', 'date'].contains(sort), '排序方式无效');
+    final current = AppSettings.fromJson(draft.obj('settings'));
+    final previous = current.browserDisplayFor(platform);
+    final updated = BrowserDisplaySettings(
+      view: view ?? previous.view,
+      sort: sort ?? previous.sort,
+      ascending: sort == null
+          ? previous.ascending
+          : sort == previous.sort
+          ? !previous.ascending
+          : true,
+    );
+    draft['settings'] = current.update({
+      'browserDisplays': {
+        for (final entry in current.browserDisplays.entries)
+          entry.key: entry.value.toJson(),
+        platform.key: updated.toJson(),
+      },
+    }).toJson();
+  });
 
   Future<void> copyText(String value) async {
     await Clipboard.setData(ClipboardData(text: value));

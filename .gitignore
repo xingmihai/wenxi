@@ -4,6 +4,7 @@
 *.pyc
 *.swp
 .DS_Store
+.rnd
 .atom/
 .build/
 .buildlog/
@@ -71,6 +72,7 @@ native/.tools/
 /releases/
 /caiiliao/
 /演示截图/
+/tool/demo/
 /LanzouAPI-master.zip
 /control.json
 /config.fixed.json

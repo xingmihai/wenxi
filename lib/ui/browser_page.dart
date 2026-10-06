@@ -7,10 +7,12 @@ import '../core/json.dart';
 import '../core/operation_progress.dart';
 import '../data/http.dart';
 import '../domain/models.dart';
+import '../domain/settings.dart';
 import '../domain/cloud_file_time.dart';
 import '../diagnostics/app_log.dart';
 import 'app_popup_menu.dart';
 import 'common.dart';
+import 'baidu_download_prompt.dart';
 import 'cloud_thumbnail.dart';
 import 'cloud_upload_dialog.dart';
 import 'login_page.dart';
@@ -56,9 +58,15 @@ class _BrowserPageState extends State<BrowserPage> {
   final selected = <String>{}, search = TextEditingController();
   final _progress = OperationProgress();
   late bool loading = widget.initialItems == null;
-  bool ascending = true, changingAccount = false, pickingUpload = false;
-  late String view = widget.services.settings.browserView;
-  String error = '', sort = 'name';
+  bool changingAccount = false, pickingUpload = false;
+  bool _selectionMode = false;
+  bool get _selecting => _selectionMode || selected.isNotEmpty;
+  BrowserDisplaySettings get _display =>
+      widget.services.settings.browserDisplayFor(session.platform);
+  String get view => _display.view;
+  String get sort => _display.sort;
+  bool get ascending => _display.ascending;
+  String error = '';
   int generation = 0;
   RequestScope? request;
   late bool _available = widget.services.control.cloudEnabled(session.platform);
@@ -101,6 +109,7 @@ class _BrowserPageState extends State<BrowserPage> {
       setState(() {
         loading = false;
         selected.clear();
+        _selectionMode = false;
       });
     }
   }
@@ -132,6 +141,7 @@ class _BrowserPageState extends State<BrowserPage> {
       loading = true;
       error = '';
       selected.clear();
+      _selectionMode = false;
     });
     try {
       _checkAccount();
@@ -167,6 +177,9 @@ class _BrowserPageState extends State<BrowserPage> {
   }
 
   List<CloudFile> get displayed {
+    final display = _display,
+        sort = display.sort,
+        ascending = display.ascending;
     final query = search.text.trim().toLowerCase();
     final result = items
         .where(
@@ -198,6 +211,14 @@ class _BrowserPageState extends State<BrowserPage> {
   }
 
   Future<void> _download(List<CloudFile> files) async {
+    if (!await confirmBaiduDownload(
+          context,
+          widget.services,
+          session.platform,
+        ) ||
+        !mounted) {
+      return;
+    }
     final added = await busy<int>(context, () async {
       _checkAccount();
       final collected = await widget.services.cloud.collect(session, files);
@@ -213,7 +234,7 @@ class _BrowserPageState extends State<BrowserPage> {
       return ids.length;
     }, label: '正在添加下载任务…');
     if (mounted && added != null && added > 0) {
-      setState(() => selected.clear());
+      _finishSelection();
       message(
         context,
         '已添加 $added 个下载任务',
@@ -671,6 +692,7 @@ class _BrowserPageState extends State<BrowserPage> {
       search.clear();
       items = List.of(initialItems ?? const []);
       selected.clear();
+      _selectionMode = false;
       error = '';
       loading = initialItems == null;
     });
@@ -834,10 +856,17 @@ class _BrowserPageState extends State<BrowserPage> {
   Future<void> _changeView(String value) async {
     if (view == value) return;
     try {
-      await widget.services.updateSettings({'browserView': value});
-      if (mounted) setState(() => view = value);
+      await widget.services.updateBrowserDisplay(session.platform, view: value);
     } catch (_) {
       if (mounted) message(context, '显示方式保存失败，请重试');
+    }
+  }
+
+  Future<void> _changeSort(String value) async {
+    try {
+      await widget.services.updateBrowserDisplay(session.platform, sort: value);
+    } catch (_) {
+      if (mounted) message(context, '排序方式保存失败，请重试');
     }
   }
 
@@ -916,11 +945,29 @@ class _BrowserPageState extends State<BrowserPage> {
   );
 
   void _toggle(CloudFile file) => setState(() {
+    _selectionMode = true;
     if (!selected.add(file.id)) selected.remove(file.id);
   });
 
+  void _finishSelection() => setState(() {
+    selected.clear();
+    _selectionMode = false;
+  });
+
+  bool _allVisibleSelected(List<CloudFile> files) =>
+      files.isNotEmpty && files.every((file) => selected.contains(file.id));
+
+  void _toggleAllVisible(List<CloudFile> files) => setState(() {
+    _selectionMode = true;
+    if (_allVisibleSelected(files)) {
+      selected.removeAll(files.map((file) => file.id));
+    } else {
+      selected.addAll(files.map((file) => file.id));
+    }
+  });
+
   void _open(CloudFile file) {
-    if (selected.isNotEmpty) {
+    if (_selecting && !widget.picking) {
       _toggle(file);
     } else if (file.isDirectory) {
       _enter(file);
@@ -989,7 +1036,7 @@ class _BrowserPageState extends State<BrowserPage> {
         leading: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            if ((selected.isNotEmpty || wide) && !widget.picking)
+            if ((_selecting || wide) && !widget.picking)
               Checkbox(value: checked, onChanged: (_) => _toggle(file)),
             CloudThumbnail(
               file,
@@ -1062,7 +1109,7 @@ class _BrowserPageState extends State<BrowserPage> {
                         height: mediaHeight,
                         large: true,
                       ),
-                      if (wide || selected.isNotEmpty)
+                      if (wide || _selecting)
                         Positioned(
                           left: 2,
                           top: 2,
@@ -1192,14 +1239,7 @@ class _BrowserPageState extends State<BrowserPage> {
             AppPopupMenuButton<String>(
               tooltip: '排序',
               icon: CupertinoIcons.sort_down,
-              onSelected: (value) => setState(() {
-                if (sort == value) {
-                  ascending = !ascending;
-                } else {
-                  sort = value;
-                  ascending = true;
-                }
-              }),
+              onSelected: _changeSort,
               actions: [
                 for (final option in [
                   ('name', '名称', CupertinoIcons.textformat_abc),
@@ -1242,29 +1282,59 @@ class _BrowserPageState extends State<BrowserPage> {
                 ],
               ),
             if (!widget.picking)
-              IconButton(
-                tooltip: selected.length == files.length ? '取消全选' : '全选',
-                icon: const Icon(CupertinoIcons.checkmark_circle, size: 22),
-                onPressed: files.isEmpty
-                    ? null
-                    : () => setState(() {
-                        if (selected.length == files.length) {
-                          selected.clear();
-                        } else {
-                          selected.addAll(files.map((f) => f.id));
-                        }
-                      }),
+              Padding(
+                padding: const EdgeInsets.only(left: 6, right: 8),
+                child: Tooltip(
+                  message: _selecting ? '取消选择' : '多选文件',
+                  child: FilledButton.icon(
+                    key: const ValueKey('browser-multi-select'),
+                    onPressed: _selecting
+                        ? _finishSelection
+                        : loading || files.isEmpty
+                        ? null
+                        : () => setState(() => _selectionMode = true),
+                    style: FilledButton.styleFrom(
+                      backgroundColor: brandBlue,
+                      foregroundColor: Colors.white,
+                      minimumSize: const Size(0, 40),
+                      padding: const EdgeInsets.symmetric(horizontal: 14),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                    ),
+                    icon: Icon(
+                      _selecting
+                          ? CupertinoIcons.checkmark
+                          : CupertinoIcons.checkmark_circle,
+                      size: 17,
+                    ),
+                    label: Text(_selecting ? '完成' : '多选'),
+                  ),
+                ),
               ),
           ],
         );
-        if (constraints.maxWidth < 360 &&
-            MediaQuery.textScalerOf(context).scale(14) > 18) {
+        if (constraints.maxWidth < 480 ||
+            constraints.maxWidth < 650 &&
+                MediaQuery.textScalerOf(context).scale(14) > 18) {
           return Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
               field,
               const SizedBox(height: 4),
-              Align(alignment: Alignment.centerRight, child: controls),
+              Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      '${files.length} 项',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(fontSize: 12, color: secondary(context)),
+                    ),
+                  ),
+                  controls,
+                ],
+              ),
             ],
           );
         }
@@ -1295,11 +1365,11 @@ class _BrowserPageState extends State<BrowserPage> {
     final files = displayed,
         selection = items.where((f) => selected.contains(f.id)).toList();
     return PopScope(
-      canPop: stack.length == 1 && selected.isEmpty,
+      canPop: stack.length == 1 && !_selecting,
       onPopInvokedWithResult: (didPop, _) {
         if (didPop) return;
-        if (selected.isNotEmpty) {
-          setState(selected.clear);
+        if (_selecting) {
+          _finishSelection();
         } else if (stack.length > 1) {
           stack.removeLast();
           _load();
@@ -1493,17 +1563,18 @@ class _BrowserPageState extends State<BrowserPage> {
               ),
             ),
             _browserToolbar(files),
-            if (selection.isNotEmpty)
+            if (_selecting && !widget.picking)
               Container(
                 color: fill(context),
                 child: SingleChildScrollView(
                   scrollDirection: Axis.horizontal,
                   child: Row(
                     children: [
-                      IconButton(
-                        tooltip: '取消选择',
-                        onPressed: () => setState(selected.clear),
-                        icon: const Icon(CupertinoIcons.xmark, size: 16),
+                      TextButton(
+                        onPressed: files.isEmpty
+                            ? null
+                            : () => _toggleAllVisible(files),
+                        child: Text(_allVisibleSelected(files) ? '取消全选' : '全选'),
                       ),
                       Text(
                         '已选 ${selection.length} 项',
@@ -1511,7 +1582,9 @@ class _BrowserPageState extends State<BrowserPage> {
                       ),
                       const SizedBox(width: 8),
                       TextButton(
-                        onPressed: () => _operate('download', selection),
+                        onPressed: selection.isEmpty
+                            ? null
+                            : () => _operate('download', selection),
                         child: const Text('下载'),
                       ),
                       if (session.mode == BrowseMode.share &&
@@ -1520,21 +1593,29 @@ class _BrowserPageState extends State<BrowserPage> {
                           session.platform.requiresAccount &&
                           session.platform.supportsSharing)
                         TextButton(
-                          onPressed: () => _operate('save', selection),
+                          onPressed: selection.isEmpty
+                              ? null
+                              : () => _operate('save', selection),
                           child: const Text('转存'),
                         )
                       else if (session.canManageFiles) ...[
                         TextButton(
-                          onPressed: () => _operate('move', selection),
+                          onPressed: selection.isEmpty
+                              ? null
+                              : () => _operate('move', selection),
                           child: const Text('移动'),
                         ),
                         if (session.platform.supportsSharing)
                           TextButton(
-                            onPressed: () => _operate('share', selection),
+                            onPressed: selection.isEmpty
+                                ? null
+                                : () => _operate('share', selection),
                             child: const Text('分享'),
                           ),
                         TextButton(
-                          onPressed: () => _operate('delete', selection),
+                          onPressed: selection.isEmpty
+                              ? null
+                              : () => _operate('delete', selection),
                           child: const Text(
                             '删除',
                             style: TextStyle(color: Colors.red),

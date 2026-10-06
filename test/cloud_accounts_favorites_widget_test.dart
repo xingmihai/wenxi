@@ -5,6 +5,7 @@ import 'package:asterlink/core/json.dart';
 import 'package:asterlink/domain/models.dart';
 import 'package:asterlink/main.dart';
 import 'package:asterlink/ui/cloud_accounts_page.dart';
+import 'package:asterlink/ui/cloud_favorites_page.dart';
 import 'package:asterlink/ui/native_password_login_page.dart';
 import 'browser_test_support.dart';
 import 'cloud_accounts_favorites_test.dart' show addFixtureAccount;
@@ -102,6 +103,84 @@ void main() {
   );
 
   for (final size in [const Size(393, 864), const Size(1100, 780)]) {
+    testWidgets('Favorite custom names display, search and clear at $size', (
+      tester,
+    ) async {
+      final fixture = await BrowserUiFixture.create();
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      try {
+        final services = fixture.services;
+        final session = await services.cloud.personal(CloudPlatform.tianyi);
+        await services.favorites.toggle(
+          session,
+          const CloudFile(id: 'photos', name: '假期相册', isDirectory: true),
+          [(session.rootId, '全部文件')],
+        );
+        tester.view.devicePixelRatio = 1;
+        tester.view.physicalSize = size;
+        await tester.pumpWidget(
+          MaterialApp(
+            theme: appTheme(Brightness.light),
+            home: CloudFavoritesPage(services),
+          ),
+        );
+        await tester.pumpAndSettle();
+        await tap(tester, find.byTooltip('假期相册的收藏操作'));
+        await tap(tester, find.text('自定义名称'));
+        final input = find.descendant(
+          of: find.byType(AlertDialog),
+          matching: find.byType(TextField),
+        );
+        await tester.enterText(input, '工作照片');
+        await tap(tester, find.text('确定'));
+        expect(find.text('工作照片'), findsOneWidget);
+        expect(services.favorites.all.single.file.name, '假期相册');
+        for (final query in ['假期相册', '工作照片']) {
+          await tester.enterText(find.byType(TextField), query);
+          await tester.pumpAndSettle();
+          expect(
+            find.byKey(
+              ValueKey('favorite-${services.favorites.all.single.id}'),
+            ),
+            findsOneWidget,
+          );
+        }
+        await tester.enterText(find.byType(TextField), '');
+        await tester.pumpAndSettle();
+        await tap(tester, find.text('工作照片'));
+        expect(fixture.connector.reads.last.$2, 'photos');
+        await tester.pageBack();
+        await tester.pumpAndSettle();
+        await tester.pageBack();
+        await tester.pumpAndSettle();
+        await tap(tester, find.byTooltip('工作照片的收藏操作'));
+        await tap(tester, find.text('自定义名称'));
+        expect(tester.widget<TextField>(input).controller!.text, '工作照片');
+        await tester.enterText(input, '');
+        await tap(tester, find.text('确定'));
+        expect(find.text('假期相册'), findsOneWidget);
+        await services.favorites.rename(
+          services.favorites.all.single.id,
+          '工作照片',
+        );
+        await tester.pumpWidget(
+          MaterialApp(
+            theme: appTheme(Brightness.light),
+            home: Scaffold(
+              body: CloudFavoritesSummary(services, desktop: size.width >= 900),
+            ),
+          ),
+        );
+        await tester.pumpAndSettle();
+        expect(find.text('工作照片'), findsOneWidget);
+        expect(tester.takeException(), isNull);
+      } finally {
+        await tester.pumpWidget(const SizedBox.shrink());
+        await fixture.close();
+      }
+    });
+
     testWidgets(
       'Account manager switches without discarding another login and cancels adding at $size',
       (tester) async {

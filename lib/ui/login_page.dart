@@ -25,6 +25,7 @@ import 'guangya_sms_login_page.dart';
 import 'login_webview.dart';
 import 'uc_tv_authorization_page.dart';
 import 'cloud_accounts_page.dart';
+import 'account_cookie.dart';
 export 'native_password_login_page.dart';
 export 'login_webview.dart' show webSettings, desktopLoginViewportScript;
 
@@ -40,27 +41,6 @@ Future<void> openLogin(
     message(context, '支持不登录解析');
     return;
   }
-  if (platform == CloudPlatform.baidu) {
-    final proceed = await showDialog<bool>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('百度网盘使用提醒'),
-        content: const Text('当前百度网盘风控较严格，暂时不推荐使用。\n\n仍需使用时，可以继续前往网页登录。'),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context, false),
-            child: const Text('取消'),
-          ),
-          TextButton(
-            onPressed: () => Navigator.pop(context, true),
-            child: const Text('继续网页登录'),
-          ),
-        ],
-      ),
-    );
-    if (proceed != true || !context.mounted) return;
-  }
-  if (!allowCloudAction(context, services.control, platform)) return;
   final created =
       addAccount ||
       (accountId == null && services.vault.activeAccountId(platform) == null);
@@ -80,7 +60,9 @@ Future<void> openLogin(
         builder: (_) => switch (platform) {
           CloudPlatform.xunlei ||
           CloudPlatform.ctfile ||
+          CloudPlatform.feijipan ||
           CloudPlatform.pan123 ||
+          CloudPlatform.lanzou ||
           CloudPlatform.tianyi ||
           CloudPlatform.aliyun ||
           CloudPlatform.ilanzou ||
@@ -210,9 +192,10 @@ Future<void> accountMenu(
     message(context, '支持不登录解析');
     return;
   }
+  final accountId = services.vault.activeAccountId(platform);
   final stored = LoginCredentials.stored(
     platform,
-    services.vault.credential(platform),
+    services.vault.credentialFor(platform, accountId),
   );
   final action = await showModalBottomSheet<String>(
     context: context,
@@ -249,6 +232,12 @@ Future<void> accountMenu(
               title: const Text('手动填写登录信息'),
               onTap: () => Navigator.pop(context, 'manual'),
             ),
+            if (stored)
+              ListTile(
+                leading: const Icon(CupertinoIcons.doc_on_doc),
+                title: const Text('复制 Cookie'),
+                onTap: () => Navigator.pop(context, 'copyCookie'),
+              ),
             if (platform == CloudPlatform.uc && stored)
               ListTile(
                 leading: const Icon(CupertinoIcons.tv),
@@ -275,10 +264,18 @@ Future<void> accountMenu(
   if (!context.mounted) return;
   if (action != null &&
       action != 'logout' &&
+      action != 'copyCookie' &&
       !allowCloudAction(context, services.control, platform)) {
     return;
   }
   switch (action) {
+    case 'copyCookie':
+      await copyCloudAccountCookie(
+        context,
+        services.vault,
+        platform,
+        accountId,
+      );
     case 'accounts':
       await Navigator.push<void>(
         context,
@@ -456,6 +453,7 @@ class _WebLoginPageState extends State<WebLoginPage>
     final target = widget.target;
     final readCookies =
         target.localStorageKey == null ||
+        target.platform == CloudPlatform.feijipan ||
         target.platform == CloudPlatform.ilanzou ||
         target.platform == CloudPlatform.wopan;
     String? page;
@@ -1354,7 +1352,9 @@ class _ManualLoginPageState extends State<ManualLoginPage> {
                   const SizedBox(width: 14),
                   Expanded(
                     child: Text(
-                      '登录信息加密保存在本机',
+                      platform == CloudPlatform.baidu
+                          ? '登录信息加密保存在本机；下载和播放时，必要凭据会加密发送至取链服务，用你的账号获取下载地址'
+                          : '登录信息加密保存在本机',
                       style: TextStyle(fontSize: 13, color: secondary(context)),
                     ),
                   ),
@@ -1393,7 +1393,8 @@ class _ManualLoginPageState extends State<ManualLoginPage> {
                     ? 'Refresh Token 或登录凭据 JSON'
                     : platform == CloudPlatform.wopan
                     ? 'Refresh Token 或登录凭据 JSON'
-                    : platform == CloudPlatform.ilanzou
+                    : platform == CloudPlatform.ilanzou ||
+                          platform == CloudPlatform.feijipan
                     ? 'appToken 或登录凭据 JSON'
                     : platform == CloudPlatform.guangya
                     ? '登录凭据 JSON 或 Access Token'

@@ -1,6 +1,27 @@
 import '../core/json.dart';
 import 'models.dart';
 
+class BrowserDisplaySettings {
+  const BrowserDisplaySettings({
+    this.view = 'list',
+    this.sort = 'name',
+    this.ascending = true,
+  });
+
+  final String view, sort;
+  final bool ascending;
+
+  Json toJson() => {'view': view, 'sort': sort, 'ascending': ascending};
+
+  factory BrowserDisplaySettings.fromJson(Json j) => BrowserDisplaySettings(
+    view: j.str('view') == 'grid' ? 'grid' : 'list',
+    sort: ['name', 'size', 'date'].contains(j.str('sort'))
+        ? j.str('sort')
+        : 'name',
+    ascending: j.boolean('ascending', true),
+  );
+}
+
 class AppSettings {
   const AppSettings({
     this.theme = 'System',
@@ -11,25 +32,33 @@ class AppSettings {
     this.threadOverrides = const {},
     this.destination,
     this.browserView = 'list',
+    this.browserDisplays = const {},
     this.clipboardRecognition = true,
     this.quarkGuestDirectDownload = false,
     this.ucGuestDirectDownload = false,
     this.quarkAuthenticatedDirectDownload = false,
     this.hideGuestDownloadNotice = false,
+    this.hideBaiduDownloadNotice = false,
   });
   final String theme;
   final int threads, concurrent, retries, speedLimit;
   final Map<String, int> threadOverrides;
   final String? destination;
   final String browserView;
+  final Map<String, BrowserDisplaySettings> browserDisplays;
+  BrowserDisplaySettings browserDisplayFor(CloudPlatform platform) =>
+      browserDisplays[platform.key] ??
+      BrowserDisplaySettings(view: browserView);
   final bool clipboardRecognition;
   final bool quarkGuestDirectDownload;
   final bool ucGuestDirectDownload;
   final bool quarkAuthenticatedDirectDownload;
   final bool hideGuestDownloadNotice;
+  final bool hideBaiduDownloadNotice;
   static const profiles = {
+    'feijipan': ('小飞机网盘', 8),
     'ctfile': ('城通网盘', 8),
-    'baidu': ('百度网盘', 64),
+    'baidu': ('百度网盘', 1),
     'quark_route_1': ('夸克 · 直链', 512),
     'quark_route_2': ('夸克 · 快传', 64),
     'uc': ('UC网盘', 512),
@@ -45,9 +74,10 @@ class AppSettings {
     'wopan': ('中国联通云盘', 64),
   };
   String? connectionProfileFor(CloudPlatform? platform, [String? profile]) =>
-      profiles.containsKey(profile)
+      profile == 'baidu_preview' || profiles.containsKey(profile)
       ? profile
       : switch (platform) {
+          CloudPlatform.feijipan => 'feijipan',
           CloudPlatform.ctfile => 'ctfile',
           CloudPlatform.baidu => 'baidu',
           CloudPlatform.quark => 'quark_route_1',
@@ -65,6 +95,11 @@ class AppSettings {
           CloudPlatform.lanzou || null => null,
         };
   int connectionsFor(CloudPlatform? platform, [String? profile]) {
+    if (platform == CloudPlatform.baidu ||
+        profile == 'baidu' ||
+        profile == 'baidu_preview') {
+      return 1;
+    }
     final key = connectionProfileFor(platform, profile);
     if (key == null) return threads.clamp(1, 512);
     final override = threadOverrides[key];
@@ -87,11 +122,16 @@ class AppSettings {
     'downloadThreadOverrides': threadOverrides,
     'destination': destination,
     'browserView': browserView,
+    'browserDisplays': {
+      for (final entry in browserDisplays.entries)
+        entry.key: entry.value.toJson(),
+    },
     'clipboardRecognition': clipboardRecognition,
     'quarkGuestDirectDownload': quarkGuestDirectDownload,
     'ucGuestDirectDownload': ucGuestDirectDownload,
     'quarkAuthenticatedDirectDownload': quarkAuthenticatedDirectDownload,
     'hideGuestDownloadNotice': hideGuestDownloadNotice,
+    'hideBaiduDownloadNotice': hideBaiduDownloadNotice,
   };
   factory AppSettings.fromJson(Json j) => AppSettings(
     theme: ['System', 'Light', 'Dark'].contains(j.str('theme'))
@@ -108,6 +148,11 @@ class AppSettings {
     },
     destination: j['destination']?.toString(),
     browserView: j.str('browserView') == 'grid' ? 'grid' : 'list',
+    browserDisplays: {
+      for (final entry in j.obj('browserDisplays').entries)
+        if (CloudPlatform.fromKey(entry.key) != null && entry.value is Map)
+          entry.key: BrowserDisplaySettings.fromJson(asJson(entry.value)),
+    },
     clipboardRecognition: j.boolean('clipboardRecognition', true),
     quarkGuestDirectDownload: j.boolean('quarkGuestDirectDownload', false),
     ucGuestDirectDownload: j.boolean('ucGuestDirectDownload', false),
@@ -116,6 +161,7 @@ class AppSettings {
       false,
     ),
     hideGuestDownloadNotice: j.boolean('hideGuestDownloadNotice', false),
+    hideBaiduDownloadNotice: j.boolean('hideBaiduDownloadNotice', false),
   );
   AppSettings update(Json fields) =>
       AppSettings.fromJson({...toJson(), ...fields});

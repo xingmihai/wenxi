@@ -14,6 +14,7 @@ class CloudFavorite {
     required this.trail,
     required this.createdAt,
     this.isShareLink = false,
+    this.customName = '',
   });
   final String id, directoryId;
   final BrowseSession session;
@@ -21,6 +22,8 @@ class CloudFavorite {
   final List<(String, String)> trail;
   final int createdAt;
   final bool isShareLink;
+  final String customName;
+  String get name => customName.ifEmpty(file.name);
   String get location => isShareLink
       ? '分享链接 / ${session.sourceLink?.url ?? ''}'
       : [
@@ -53,6 +56,7 @@ class CloudFavorite {
     ],
     'createdAt': createdAt,
     'isShareLink': isShareLink,
+    'customName': customName,
   };
   factory CloudFavorite.fromJson(Json j) => CloudFavorite(
     id: j.str('id'),
@@ -62,6 +66,7 @@ class CloudFavorite {
     trail: j.list('trail').map((e) => (e.str('id'), e.str('name'))).toList(),
     createdAt: j.integer('createdAt'),
     isShareLink: j.boolean('isShareLink'),
+    customName: j.str('customName').trim(),
   );
 }
 
@@ -179,6 +184,17 @@ class CloudFavorites {
         .list('cloudFavorites')
         .where((e) => e.str('id') != id)
         .toList();
+  });
+
+  Future<void> rename(String id, String name) => store.change((draft) {
+    final value = name.trim();
+    require(value.runes.length <= 80, '收藏名称最多 80 个字符');
+    require(!RegExp(r'[\x00-\x1f\x7f]').hasMatch(value), '收藏名称不能包含换行或控制字符');
+    final favorites = draft.list('cloudFavorites');
+    final index = favorites.indexWhere((favorite) => favorite.str('id') == id);
+    require(index >= 0, '该收藏已移除，请刷新后重试');
+    favorites[index] = {...favorites[index], 'customName': value};
+    draft['cloudFavorites'] = favorites;
   });
 
   Future<

@@ -6,6 +6,7 @@ import 'xunlei_web_login.dart';
 /// The public web clients store token objects, rather than login cookies.
 class WebTokens {
   static bool supports(CloudPlatform platform) =>
+      platform == CloudPlatform.feijipan ||
       platform == CloudPlatform.aliyun ||
       platform == CloudPlatform.guangya ||
       platform == CloudPlatform.xunlei ||
@@ -44,6 +45,10 @@ class WebTokens {
   }
 
   static Map<String, String> fields(CloudPlatform platform, String raw) {
+    if (platform == CloudPlatform.feijipan) {
+      final common = decode(raw).obj('common');
+      return _ilanzouFields(common.isEmpty ? raw : jsonEncode(common));
+    }
     if (platform == CloudPlatform.ilanzou) return _ilanzouFields(raw);
     var value = raw.trim();
     try {

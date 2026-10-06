@@ -13,6 +13,7 @@ import '../uploads/upload_io.dart';
 import '../../core/operation_progress.dart';
 import '../login_cookies.dart';
 import 'lanzou_protocol.dart';
+import 'lanzou_login.dart';
 
 part 'uploads/lanzou_upload.dart';
 
@@ -594,15 +595,7 @@ class LanzouConnector extends CloudConnector {
   Future<LoginResult> authenticate(Credential credential) async {
     final context = await _personalContext(credential);
     // Verify the personal file API before accepting browser cookies.
-    final files = await _accountCall(context, {
-      'task': 5,
-      'folder_id': '-1',
-      'pg': 1,
-    }, listing: true);
-    require(
-      files.integer('zt') == 2 || files['text'] is List,
-      '蓝奏未返回有效文件列表，请在网页进入「我的文件」后重新检测',
-    );
+    if (context.verifiedFiles == null) await _verifyAccountFiles(context);
     return LoginResult(
       credential.withFields({
         'primary': context.cookie,
@@ -610,6 +603,15 @@ class LanzouConnector extends CloudConnector {
       }, preserveRevision: true),
       const CloudAccount('蓝奏云用户'),
     );
+  }
+
+  Future<LoginResult> password(String username, String password) async {
+    final credential = await LanzouPasswordLogin(
+      http,
+      clock: clock,
+    ).submit(username, password);
+    RequestScope.checkpoint();
+    return authenticate(credential);
   }
 
   @override

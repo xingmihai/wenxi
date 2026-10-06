@@ -13,6 +13,7 @@ import 'http_retry.dart';
 import 'cleanup_outbox.dart';
 import 'providers/baidu.dart';
 import 'providers/ctfile.dart';
+import 'providers/feijipan.dart';
 import 'providers/quark.dart';
 import 'providers/uc.dart';
 import 'providers/pan123.dart';
@@ -45,8 +46,13 @@ class CloudRepository {
            : RetryingJsonHttp(transport) {
     final devices = XunleiDevices(vault);
     connectors = {
+      CloudPlatform.feijipan: FeijipanConnector(http, vault),
       CloudPlatform.ctfile: CtfileConnector(http),
-      CloudPlatform.baidu: BaiduConnector(http, stageCleanup: _stageCleanup),
+      CloudPlatform.baidu: BaiduConnector(
+        http,
+        store: vault,
+        stageCleanup: _stageCleanup,
+      ),
       CloudPlatform.quark: QuarkConnector(
         http,
         store: vault,
@@ -541,7 +547,12 @@ class CloudRepository {
           }
           cleanups.retain(result.cleanup);
           return result.copyWith(
-            source: DownloadOrigin(session, file, revision).toJson(),
+            source: {
+              ...DownloadOrigin(session, file, revision).toJson(),
+              if (provider is BaiduConnector &&
+                  result.source?['baiduTransfer'] != null)
+                'baiduTransfer': result.source!['baiduTransfer'],
+            },
           );
         } catch (_) {
           for (final cleanup in staged) {
@@ -645,6 +656,26 @@ class CloudRepository {
         origin.session,
         origin.accountRevision,
         () async {
+          final provider = connector(origin.session.platform);
+          if (provider is BaiduConnector &&
+              origin.session.mode == BrowseMode.share &&
+              !previous.needsPreparation) {
+            final reused = await provider.refreshTransfer(
+              previous,
+              credential(origin.session.platform),
+            );
+            if (reused != null) {
+              RequestScope.checkpoint();
+              ensureAvailable(origin.session.platform);
+              require(
+                vault.credential(origin.session.platform)?.updatedAt ==
+                    origin.accountRevision,
+                '帐号已变化，请重新打开文件列表',
+              );
+              cleanups.retain(reused.cleanup);
+              return reused;
+            }
+          }
           final restored = await restoreOrigin(origin);
           return (await prepare(restored.session, restored.file)).copyWith(
             fileName: previous.fileName,

@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:math' as math;
 import 'package:crypto/crypto.dart';
 import '../../core/json.dart';
@@ -5,21 +6,63 @@ import '../../domain/auth.dart';
 import '../../domain/models.dart';
 import '../../domain/uploads.dart';
 import '../http.dart';
+import '../state_store.dart';
 import '../uploads/upload_io.dart';
 import '../../core/operation_progress.dart';
+import '../../diagnostics/app_log.dart';
+import 'baidu_link_service.dart';
+import 'baidu_app_client.dart';
+
+class _BaiduFileMissing extends AppException {
+  const _BaiduFileMissing() : super('百度文件或分享已失效');
+}
 
 class BaiduConnector extends CloudConnector {
-  BaiduConnector(this.http, {this.stageCleanup});
+  BaiduConnector(
+    this.http, {
+    this.stageCleanup,
+    CredentialStore? store,
+    BaiduAppClient? client,
+    BaiduLinkLookup? linkLookup,
+  }) : _client = client ?? BaiduAppClient(store: store),
+       _linkLookup = linkLookup ?? BaiduLinkService(http).resolve;
   final JsonHttp http;
+  final BaiduAppClient _client;
   final Future<void> Function(DownloadCleanup)? stageCleanup;
+  final BaiduLinkLookup _linkLookup;
   @override
   CloudPlatform get platform => CloudPlatform.baidu;
-  // Public web-client identifier used by the supplied YunX Baidu implementation.
   static const defaultAppId = '250528';
   static const webUa =
       'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
-  static const netdiskUa =
-      'netdisk;12.24.6;piano;android-android;16;JSbridge4.4.0;jointBridge;1.1.0';
+  static const netdiskUa = BaiduAppClient.fallbackUserAgent;
+
+  // The Android API accepts the existing BDUSS/STOKEN cookie. Its CSRF token
+  // is MD5(BDUSS), not the token returned to browser clients.
+  String _appToken(String ck) {
+    final bduss = LoginCredentials.cookiePairs(ck)['BDUSS'] ?? '';
+    return bduss.isEmpty ? '' : md5.convert(utf8.encode(bduss)).toString();
+  }
+
+  Future<Map<String, Object?>> _appParams(
+    String ck, [
+    String id = defaultAppId,
+  ]) async {
+    await _client.prepare();
+    RequestScope.checkpoint();
+    final token = _appToken(ck);
+    return {
+      'app_id': id,
+      'clienttype': 1,
+      'version': BaiduAppClient.version,
+      // Keep the channel present but empty: the Android distribution channel
+      // rejects browser-created sessions on the current list endpoint (errno 2).
+      'channel': '',
+      if (token.isNotEmpty) 'bdstoken': token,
+      ..._client.parameters,
+    };
+  }
+
   String appId(Credential c) {
     final id = c
         .field('appId')
@@ -43,9 +86,7 @@ class BaiduConnector extends CloudConnector {
   };
   Map<String, String> diskHeaders(String cookie) => {
     'Cookie': cookie,
-    'User-Agent': netdiskUa,
-    'Referer': 'https://yun.baidu.com/disk/main',
-    'X-Requested-With': 'XMLHttpRequest',
+    'User-Agent': _client.userAgent,
   };
   Json check(
     HttpResult result, {
@@ -63,6 +104,9 @@ class BaiduConnector extends CloudConnector {
         (rawCode == null && allowMissingCode && result.successful ? 0 : -1);
     if (errno == -6) {
       throw const AccountLoginRequired('百度登录已失效，请重新网页登录');
+    }
+    if (result.successful && {-9, 31066}.contains(errno)) {
+      throw const _BaiduFileMissing();
     }
     if (errno == 8888) {
       throw const AppException('百度文件接口返回异常（8888），请稍后重试或重新网页登录');
@@ -102,12 +146,9 @@ class BaiduConnector extends CloudConnector {
     final id = appId(credential), ck = cookie(credential);
     final quota = check(
       await http.get(
-        query('https://yun.baidu.com/api/quota', {
-          'clienttype': 0,
-          'app_id': id,
-          'web': 1,
-          'channel': 'chunlei',
-          'version': DateTime.now().millisecondsSinceEpoch,
+        query('https://pan.baidu.com/api/quota', {
+          ...await _appParams(ck, id),
+          'checkrecycle': 1,
         }),
         diskHeaders(ck),
       ),
@@ -120,23 +161,57 @@ class BaiduConnector extends CloudConnector {
     );
     var nickname = credential.field('nickname').ifEmpty('百度用户');
     try {
-      nickname = check(
-        await http.get(
-          query('https://pan.baidu.com/api/gettemplatevariable', {
-            'clienttype': 0,
-            'app_id': id,
-            'web': 1,
-            'fields': '["username"]',
-          }),
-          webHeaders(ck),
-        ),
-      ).obj('result').str('username').ifEmpty(nickname);
+      final profile = await _profile(credential);
+      nickname = profile
+          .str('netdisk_name')
+          .ifEmpty(profile.str('baidu_name'))
+          .ifEmpty(nickname);
     } on AccountLoginRequired {
       rethrow;
     } on AppException {
       // Quota is usable even if the optional display-name endpoint is unavailable.
     }
     return CloudAccount(nickname, used: used!, total: total!);
+  }
+
+  Future<LoginResult> authenticate(Credential c) async {
+    final session = await openPersonal(c);
+    // A quota response (or a generic account-validation fallback) does not prove
+    // that the saved web session can actually read the user's files.
+    await _compatibleList(session, session.rootId, c, firstPageOnly: true);
+    CloudAccount profile;
+    try {
+      profile = await account(c);
+    } on AppException {
+      RequestScope.checkpoint();
+      // The file list already validated this session. Quota/profile requests
+      // are optional because browser sessions may not support the App endpoint.
+      profile = CloudAccount(c.field('nickname').ifEmpty('百度用户'));
+    }
+    return LoginResult(c, profile);
+  }
+
+  Future<Json> _profile(Credential c) async => check(
+    await http.get(
+      query('https://pan.baidu.com/rest/2.0/xpan/nas', {
+        ...await _appParams(cookie(c), appId(c)),
+        'method': 'uinfo',
+      }),
+      diskHeaders(cookie(c)),
+    ),
+  );
+
+  Future<bool> _ownsShare(BrowseSession s, Credential c) async {
+    final owner = s.meta('uk');
+    if (owner.isEmpty) return false;
+    try {
+      return (await _profile(c)).str('uk') == owner;
+    } on AccountLoginRequired {
+      rethrow;
+    } on AppException {
+      RequestScope.checkpoint();
+      return false;
+    }
   }
 
   @override
@@ -234,11 +309,54 @@ class BaiduConnector extends CloudConnector {
     missingShareKey: sekey.isEmpty,
   );
   @override
-  Future<List<CloudFile>> list(
+  Future<List<CloudFile>> list(BrowseSession s, String parent, Credential? c) =>
+      _compatibleList(s, parent, c);
+
+  Future<List<CloudFile>> _compatibleList(
     BrowseSession s,
     String parent,
-    Credential? c,
-  ) async {
+    Credential? c, {
+    bool firstPageOnly = false,
+  }) async {
+    try {
+      return await _list(s, parent, c, firstPageOnly: firstPageOnly);
+    } on AccountLoginRequired {
+      if (s.mode != BrowseMode.personal || c == null) rethrow;
+      cookie(c);
+      RequestScope.checkpoint();
+      DiagnosticLog.event(
+        'baidu.personal_list_fallback',
+        fields: {'reason': 'app_session_rejected'},
+      );
+      // Retry from page one with the same account; mixing App offsets with Web
+      // pages can omit files. Share parsing never enters this fallback.
+      try {
+        return await _list(
+          s,
+          parent,
+          c,
+          web: true,
+          firstPageOnly: firstPageOnly,
+        );
+      } catch (error, stack) {
+        DiagnosticLog.error(
+          'baidu.personal_list_failed',
+          error,
+          stack,
+          fields: {'route': 'web'},
+        );
+        rethrow;
+      }
+    }
+  }
+
+  Future<List<CloudFile>> _list(
+    BrowseSession s,
+    String parent,
+    Credential? c, {
+    bool web = false,
+    bool firstPageOnly = false,
+  }) async {
     final share = s.mode == BrowseMode.share;
     if (!share && c == null) throw const AccountLoginRequired('请先登录百度网盘');
     final ck = share
@@ -258,20 +376,29 @@ class BaiduConnector extends CloudConnector {
           : check(
               await http.get(
                 query('https://pan.baidu.com/api/list', {
-                  'channel': 'chunlei',
-                  'clienttype': 0,
-                  'app_id': appId(c!),
-                  'web': 1,
+                  if (web) ...{
+                    'channel': 'chunlei',
+                    'clienttype': 0,
+                    'app_id': appId(c!),
+                    'web': 1,
+                    'page': page,
+                    'num': 100,
+                  } else ...{
+                    ...await _appParams(ck, appId(c!)),
+                    'start': (page - 1) * 100,
+                    'limit': 100,
+                    'preset': 0,
+                  },
                   'order': 'time',
                   'desc': 1,
                   'dir': parent.ifEmpty('/'),
-                  'num': 100,
-                  'page': page,
                 }),
-                {
-                  ...webHeaders(ck),
-                  'Referer': 'https://pan.baidu.com/disk/main',
-                },
+                web
+                    ? {
+                        ...webHeaders(ck),
+                        'Referer': 'https://pan.baidu.com/disk/main',
+                      }
+                    : diskHeaders(ck),
               ),
             );
       require(j['list'] is List, '百度文件列表响应不完整，请刷新重试');
@@ -305,12 +432,15 @@ class BaiduConnector extends CloudConnector {
           ),
         );
       }
-      if (batch.length < 100 || fresh == 0) break;
+      if (firstPageOnly || batch.length < 100 || fresh == 0) break;
       require(page < 100, '目录文件过多，请缩小范围后重试');
     }
     return files;
   }
 
+  /// 百度网盘下载目前通过中转取链接口获取地址，文件内容仍由客户端直连百度下载。
+  /// 因百度网盘接口的特殊性，服务端取链实现暂不开源，避免公开后接口很快失效。
+  /// 后续会根据接口稳定性和实际情况考虑开源；此处保留客户端对接与下载流程。
   @override
   Future<DownloadSpec> download(
     BrowseSession s,
@@ -321,18 +451,18 @@ class BaiduConnector extends CloudConnector {
     if (c == null) throw const AccountLoginRequired('百度下载需要登录账号');
     final account = c, ck = cookie(c), id = appId(c);
     DownloadCleanup? cleanup;
-    String direct;
-    if (s.mode == BrowseMode.share) {
+    Json? transfer;
+    ({String url, bool preview}) direct;
+    if (s.mode == BrowseMode.share && !await _ownsShare(s, c)) {
       const root = '/文析助手临时转存';
-      final token = await _bdstoken(account);
       final directory = '$root/tr_${newId()}';
       await OperationProgress.step(OperationStage.createTemporary, () async {
-        await _mkdir(root, account, allowExisting: true, token: token);
-        await _mkdir(directory, account, token: token);
+        await _mkdir(root, account, allowExisting: true);
+        await _mkdir(directory, account);
       });
       // Delete only the unique directory created by this request, never the shared root.
       cleanup = DownloadCleanup(
-        url: _managerUrl('delete', id, token),
+        url: await _managerUrl('delete', ck, id),
         body: form({
           'filelist': encoded([directory]),
         }),
@@ -345,16 +475,29 @@ class BaiduConnector extends CloudConnector {
         await stageCleanup?.call(cleanup);
         final transferred = await OperationProgress.step(
           OperationStage.transfer,
-          () => _transfer(s, file, directory, account, token: token),
+          () => _transfer(s, file, directory, account),
         );
         final path = transferred.str('to');
-        require(
-          path.startsWith('$directory/') && path != '$directory/',
-          '百度转存未返回完整文件路径',
+        require(_insideTransfer(path, directory), '百度转存未返回完整文件路径');
+        final saved = await OperationProgress.step(
+          OperationStage.transfer,
+          () => _confirmedTransfer(
+            directory,
+            transferred.str('to_fs_id'),
+            path,
+            file.size,
+            account,
+          ),
         );
+        require(saved != null, '百度转存文件尚未就绪，请稍后重试');
+        transfer = {'directory': directory, 'file': saved!.toJson()};
         direct = await OperationProgress.step(
           OperationStage.downloadLink,
-          () => _downloadUrl(path, transferred.str('to_fs_id'), account),
+          () => _downloadUrl(saved.token, saved.id, account),
+        );
+        DiagnosticLog.event(
+          'baidu.share_download_ready',
+          fields: {'reused': false, 'preview': direct.preview},
         );
       } catch (_) {
         final pending = cleanup;
@@ -374,151 +517,168 @@ class BaiduConnector extends CloudConnector {
         () => _downloadUrl(path, file.id, account),
       );
     }
-    require(direct.isNotEmpty, '百度没有返回可用下载链接');
+    require(direct.url.isNotEmpty, '百度没有返回可用下载链接');
     return DownloadSpec(
-      url: direct,
+      url: direct.url,
       fileName: file.name,
       expectedSize: file.size,
       checksumType: file.hashType,
       checksumValue: file.hashValue,
       headers: {
         'Cookie': ck,
-        'User-Agent': netdiskUa,
+        'User-Agent': _client.downloadUserAgent,
         'Referer': 'https://pan.baidu.com/',
+        'Accept-Encoding': 'identity',
+        'Content-Transfer-Encoding': 'binary',
       },
       cleanup: cleanup,
+      source: transfer == null ? null : {'baiduTransfer': transfer},
+      profile: direct.preview ? 'baidu_preview' : 'baidu',
     );
   }
 
-  bool _httpUrl(String value) {
-    final uri = Uri.tryParse(value);
-    return uri != null &&
-        {'https', 'http'}.contains(uri.scheme) &&
-        uri.host.isNotEmpty &&
-        uri.userInfo.isEmpty;
+  bool _insideTransfer(String path, String directory) {
+    if (!path.startsWith('$directory/')) return false;
+    final name = path.substring(directory.length + 1);
+    return name.isNotEmpty &&
+        !{'..', '.'}.contains(name) &&
+        !name.contains('/');
   }
 
-  Future<String> _downloadUrl(String path, String fsId, Credential c) async {
-    if (path.startsWith('/')) {
+  Future<CloudFile?> _confirmedTransfer(
+    String directory,
+    String fileId,
+    String path,
+    int size,
+    Credential c,
+  ) async {
+    final personal = await openPersonal(c);
+    // A transfer acknowledgement can arrive before the personal listing updates.
+    // Retry visibility only; network/authentication failures must not retransfer.
+    for (var attempt = 0; attempt < 3; attempt++) {
+      if (attempt > 0) {
+        await RequestScope.wait(Duration(milliseconds: attempt * 400));
+      }
+      RequestScope.checkpoint();
+      List<CloudFile> files;
       try {
-        return await _locate(path, cookie(c), appId(c));
-      } on AccountLoginRequired {
-        rethrow;
-      } on AppException {
-        if (RequestScope.current?.isCancelled == true ||
-            !RegExp(r'^\d+$').hasMatch(fsId)) {
-          rethrow;
-        }
+        files = await list(personal, directory, c);
+      } on _BaiduFileMissing {
+        files = const [];
+      }
+      final saved = files.where((f) => f.id == fileId).firstOrNull;
+      if (saved != null) {
+        require(
+          !saved.isDirectory &&
+              saved.token == path &&
+              (size <= 0 || saved.size == size),
+          '百度转存文件信息发生变化，请重新解析',
+        );
+        return saved;
       }
     }
-    require(RegExp(r'^\d+$').hasMatch(fsId), '百度文件标识已失效，请刷新列表后重试');
-    final j = check(
-      await http.get(
-        query('https://pan.baidu.com/api/filemetas', {
-          'dlink': 1,
-          'fsids': encoded([fsId]),
-          'bdstoken': await _bdstoken(c),
-          'clienttype': 0,
-          'app_id': appId(c),
-          'web': 1,
-        }),
-        webHeaders(cookie(c)),
-      ),
-    );
-    final direct = j.list('info').firstOrNull?.str('dlink') ?? '';
-    require(_httpUrl(direct), '百度没有返回可用下载链接');
-    return direct;
+    return null;
   }
 
-  Future<String> _locate(String path, String ck, String id) async {
-    require(path.isNotEmpty, '百度转存未返回路径');
-    final j = check(
-      await http.postFormRead(
-        query('https://d.pcs.baidu.com/rest/2.0/pcs/file', {
-          'method': 'locatedownload',
-          'app_id': id,
-          'clienttype': 17,
-          'ver': '4.0',
-          'ant': 1,
-          'check_blue': 1,
-          'es': 1,
-          'esl': 1,
-          'apn_id': '1_-1',
-          'freeisp': 0,
-          'queryfree': 0,
-          'use': 1,
-          'dtype': 1,
-          'eck': 1,
-          'ehps': 1,
-          'err_ver': '1.0',
-          'network_type': 'WIFI',
-          'channel': 0,
-          'path': path,
-          'time': DateTime.now().millisecondsSinceEpoch ~/ 1000,
-          'rand': '5ed606e9da222cde0474cdf70eda884b',
-          'devuid': '0F1E9FC2E084472DA5A61C4CF4C759AF',
-          'cuid': '0F1E9FC2E084472DA5A61C4CF4C759AF',
-          'deviceid': '348642637967375013',
-          'psign': '860a071f77c860e8cea06e4e54c518f3',
-          'version': '2.2.111.34',
-          'version_app': '12.24.6',
-          'vip': 0,
-        }),
-        '0',
-        {'Cookie': ck, 'User-Agent': netdiskUa},
-      ),
-      allowMissingCode: true,
+  /// Refresh the task's existing copy, retaining the original share separately
+  /// so a cleaned or deleted temporary copy can still be recreated by the caller.
+  Future<DownloadSpec?> refreshTransfer(
+    DownloadSpec previous,
+    Credential c,
+  ) async {
+    final transfer = previous.source?.obj('baiduTransfer');
+    final cleanup = previous.cleanup;
+    if (transfer == null || transfer.isEmpty || cleanup == null) return null;
+    final directory = transfer.str('directory');
+    final file = CloudFile.fromJson(transfer.obj('file'));
+    if (!RegExp(
+          r'^/文析助手临时转存/tr_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$',
+        ).hasMatch(directory) ||
+        !_insideTransfer(file.token, directory) ||
+        file.id.isEmpty ||
+        file.isDirectory) {
+      return null;
+    }
+    // Only reuse the copy owned by this cleanup record, never arbitrary paths
+    // from old or malformed persisted state.
+    try {
+      final endpoint = Uri.parse(cleanup.url);
+      final paths = jsonDecode(
+        Uri.splitQueryString(cleanup.body ?? '')['filelist'] ?? 'null',
+      );
+      if (endpoint.scheme != 'https' ||
+          endpoint.host != 'pan.baidu.com' ||
+          endpoint.path != '/api/filemanager' ||
+          endpoint.queryParameters['opera'] != 'delete' ||
+          cleanup.method != 'POST' ||
+          cleanup.action != null ||
+          paths is! List ||
+          paths.length != 1 ||
+          paths.single != directory) {
+        return null;
+      }
+    } on FormatException {
+      return null;
+    }
+    final saved = await _confirmedTransfer(
+      directory,
+      file.id,
+      file.token,
+      previous.expectedSize > 0 ? previous.expectedSize : file.size,
+      c,
     );
-    final urls = j
-        .list('urls')
-        .where((u) => u.integer('encrypt', 1) == 0 && _httpUrl(u.str('url')))
-        .toList();
-    final candidate =
-        urls.where((u) => u.str('url').startsWith('https:')).firstOrNull ??
-        urls.firstOrNull;
-    require(candidate != null, '百度未返回可直接下载的链接，请稍后重试');
-    return candidate!.str('url');
+    if (saved == null) return null;
+    final result = await download(await openPersonal(c), saved, c);
+    DiagnosticLog.event(
+      'baidu.share_download_ready',
+      fields: {'reused': true, 'preview': result.profile == 'baidu_preview'},
+    );
+    return result.copyWith(
+      fileName: previous.fileName,
+      relativePath: previous.relativePath,
+      cleanup: cleanup,
+      source: previous.source,
+    );
   }
 
-  Future<String> _bdstoken(Credential c) async {
-    final token = check(
-      await http.get(
-        query('https://pan.baidu.com/api/gettemplatevariable', {
-          'clienttype': 0,
-          'app_id': appId(c),
-          'web': 1,
-          'fields': '["bdstoken"]',
-        }),
-        webHeaders(cookie(c)),
-      ),
-    ).obj('result').str('bdstoken');
-    require(token.isNotEmpty, '无法获取百度会话令牌');
-    return token;
+  Future<BaiduResolvedLink> _downloadUrl(
+    String path,
+    String fsId,
+    Credential c,
+  ) async {
+    final ck = cookie(c), id = appId(c);
+    await _client.prepare();
+    RequestScope.checkpoint();
+    final result = await _linkLookup(
+      cookie: ck,
+      path: path,
+      fileId: fsId,
+      appId: id,
+      device: _client.serviceDevice,
+    );
+    RequestScope.checkpoint();
+    return result;
   }
 
   Future<Json> _mkdir(
     String path,
     Credential c, {
     bool allowExisting = false,
-    String? token,
   }) async {
     return check(
       await http.postForm(
         query('https://pan.baidu.com/api/create', {
+          ...await _appParams(cookie(c), appId(c)),
           'a': 'commit',
-          'channel': 'chunlei',
-          'web': 1,
-          'app_id': appId(c),
-          'clienttype': 0,
-          'bdstoken': token ?? await _bdstoken(c),
+          'norename': '',
         }),
         form({
           'path': path,
           'isdir': 1,
-          'size': '',
+          'size': 0,
           'block_list': '[]',
-          'method': 'post',
-          'dataType': 'json',
+          'local_ctime': DateTime.now().millisecondsSinceEpoch ~/ 1000,
+          'local_mtime': DateTime.now().millisecondsSinceEpoch ~/ 1000,
         }),
         diskHeaders(cookie(c)),
       ),
@@ -526,23 +686,18 @@ class BaiduConnector extends CloudConnector {
     );
   }
 
-  String _managerUrl(String op, String id, String token) => query(
-    'https://${op == 'rename' ? 'yun' : 'pan'}.baidu.com/api/filemanager',
-    {
-      'async': op == 'rename' ? 0 : 2,
-      'onnest': 'fail',
-      'opera': op,
-      'bdstoken': token,
-      if (op == 'delete') 'newVerify': 1,
-      'clienttype': 0,
-      'app_id': id,
-      'web': 1,
-    },
-  );
+  Future<String> _managerUrl(String op, String ck, String id) async =>
+      query('https://pan.baidu.com/api/filemanager', {
+        ...await _appParams(ck, id),
+        'async': 0,
+        'onnest': 'fail',
+        'opera': op,
+        if (op == 'delete') 'newVerify': 1,
+      });
   Future<void> _manage(String op, List<Object?> files, Credential c) async {
     check(
       await http.postForm(
-        _managerUrl(op, appId(c), await _bdstoken(c)),
+        await _managerUrl(op, cookie(c), appId(c)),
         form({'filelist': encoded(files)}),
         diskHeaders(cookie(c)),
       ),
@@ -551,6 +706,44 @@ class BaiduConnector extends CloudConnector {
 
   void personal(BrowseSession s) =>
       require(s.mode == BrowseMode.personal, '请在个人网盘中执行此操作');
+
+  Future<List<String>> _uploadServers(Credential c, String sign) async {
+    final j = check(
+      await http.get(
+        query('https://d.pcs.baidu.com/rest/2.0/pcs/file', {
+          ...await _appParams(cookie(c), appId(c)),
+          'method': 'locateupload',
+          'upload_version': '2.0',
+          if (sign.isNotEmpty) 'uploadsign': sign,
+        }),
+        diskHeaders(cookie(c)),
+      ),
+      allowMissingCode: true,
+    );
+    final servers = <String>{};
+    for (final value in [
+      ...j.list('servers').map((s) => s.str('server')),
+      ...j.list('bak_servers').map((s) => s.str('server')),
+      if (j.str('host').isNotEmpty) 'https://${j.str('host')}',
+    ]) {
+      final uri = Uri.tryParse(value);
+      // These endpoints receive the account cookie and file contents.
+      if (uri == null ||
+          uri.scheme != 'https' ||
+          !uri.host.endsWith('.pcs.baidu.com') ||
+          uri.userInfo.isNotEmpty ||
+          uri.hasQuery ||
+          uri.hasFragment ||
+          uri.port != 443 ||
+          !{'', '/'}.contains(uri.path)) {
+        continue;
+      }
+      servers.add(uri.origin);
+    }
+    require(servers.isNotEmpty, '百度未返回可用上传节点，请稍后重试');
+    return servers.take(3).toList();
+  }
+
   @override
   Future<CloudFile> upload(
     BrowseSession s,
@@ -562,7 +755,6 @@ class BaiduConnector extends CloudConnector {
     personal(s);
     require(source.size > 0, '百度网盘不支持上传空文件');
     final io = UploadIO(http, source, onProgress), ck = cookie(c);
-    final token = await _bdstoken(c);
     final path = '${parent.replaceFirst(RegExp(r'/+$'), '')}/${source.name}';
     const chunkSize = 4 * 1024 * 1024;
     final count = (source.size / chunkSize).ceil(), blocks = <String>[];
@@ -577,13 +769,7 @@ class BaiduConnector extends CloudConnector {
     }
     final whole = await io.digest(md5),
         prefix = await io.digest(md5, end: math.min(source.size, 256 * 1024));
-    final params = <String, Object?>{
-      'channel': 'chunlei',
-      'web': 1,
-      'app_id': appId(c),
-      'clienttype': 0,
-      'bdstoken': token,
-    };
+    final params = await _appParams(ck, appId(c));
     final pre = check(
       await http.postForm(
         query('https://pan.baidu.com/api/precreate', params),
@@ -605,32 +791,47 @@ class BaiduConnector extends CloudConnector {
       require(uploadId.isNotEmpty, '百度未创建上传任务');
       final needed = pre['block_list'];
       require(needed is List, '百度未返回待上传分段');
+      final servers = (needed as List).isEmpty
+          ? <String>[]
+          : await _uploadServers(c, pre.str('uploadsign'));
+      var serverIndex = 0;
       final uploaded = <int>{};
-      for (final raw in needed as List) {
+      for (final raw in needed) {
         final index = int.tryParse('$raw');
         require(
           index != null && index >= 0 && index < count && uploaded.add(index),
           '百度返回的上传分段序号无效',
         );
-        final result = check(
-          await io.send(
-            query('https://d.pcs.baidu.com/rest/2/pcs/superfile2', {
-              ...params,
-              'method': 'upload',
-              'type': 'tmpfile',
-              'path': path,
-              'uploadid': uploadId,
-              'partseq': index,
-            }),
-            method: 'POST',
-            start: index! * chunkSize,
-            end: math.min(source.size, (index + 1) * chunkSize),
-            fields: const {},
-            headers: webHeaders(ck),
-            retry: false,
-          ),
-          allowMissingCode: true,
-        );
+        late Json result;
+        for (;;) {
+          RequestScope.checkpoint();
+          try {
+            final response = await io.send(
+              query('${servers[serverIndex]}/rest/2.0/pcs/superfile2', {
+                ...params,
+                'method': 'upload',
+                'type': 'tmpfile',
+                'path': path,
+                'uploadid': uploadId,
+                'partseq': index,
+              }),
+              method: 'POST',
+              start: index! * chunkSize,
+              end: math.min(source.size, (index + 1) * chunkSize),
+              fields: const {},
+              headers: diskHeaders(ck),
+              retry: false,
+            );
+            result = check(response, allowMissingCode: true);
+            break;
+          } on HttpRequestFailure catch (error) {
+            RequestScope.checkpoint();
+            // uploadid + partseq identify the same temporary block on every
+            // node; switching nodes never commits a second user file.
+            if (!error.retryable || serverIndex + 1 >= servers.length) rethrow;
+            serverIndex++;
+          }
+        }
         require(result.str('md5').toLowerCase() == blocks[index], '百度上传分段校验失败');
       }
       io.progress(UploadPhase.finishing, source.size);
@@ -730,9 +931,8 @@ class BaiduConnector extends CloudConnector {
     BrowseSession s,
     CloudFile file,
     String target,
-    Credential c, {
-    String? token,
-  }) async {
+    Credential c,
+  ) async {
     final ck = cookie(c), sekey = s.meta('sekey');
     require(RegExp(r'^\d+$').hasMatch(file.id), '百度文件标识缺失，请重新打开分享列表');
     var shareId = s.meta('shareId'), uk = s.meta('uk');
@@ -745,22 +945,19 @@ class BaiduConnector extends CloudConnector {
     final j = check(
       await http.postForm(
         query('https://pan.baidu.com/share/transfer', {
+          ...await _appParams(ck, appId(c)),
           'shareid': shareId,
           'from': uk,
-          'channel': 'chunlei',
           if (sekey.isNotEmpty) 'sekey': _shareKey(sekey),
           'ondup': 'newcopy',
-          'web': 1,
-          'app_id': appId(c),
-          'bdstoken': token ?? await _bdstoken(c),
-          'clienttype': 0,
         }),
         form({
           'fsidlist': encoded([file.id]),
           'path': target,
+          'force': 1,
         }),
         {
-          ...webHeaders(_shareCookie(ck, sekey)),
+          ...diskHeaders(_shareCookie(ck, sekey)),
           'Origin': 'https://pan.baidu.com',
           'Referer': 'https://pan.baidu.com/s/',
         },
@@ -779,6 +976,19 @@ class BaiduConnector extends CloudConnector {
     Credential c,
   ) async {
     require(s.mode == BrowseMode.share, '请打开分享链接');
+    if (await _ownsShare(s, c)) {
+      // Baidu rejects transferring a share back to its owner, even into a
+      // different directory. Copy the authenticated owner's original paths.
+      await _manage('copy', [
+        for (final file in files)
+          {
+            'path': file.token.ifEmpty(file.id),
+            'dest': target,
+            'newname': file.name,
+          },
+      ], c);
+      return;
+    }
     for (final file in files) {
       await _transfer(s, file, target, c);
     }
@@ -794,21 +1004,19 @@ class BaiduConnector extends CloudConnector {
     personal(s);
     final password = options.passcode ?? '';
     require(
-      files.isNotEmpty && files.every((f) => RegExp(r'^\d+$').hasMatch(f.id)),
-      '百度文件标识缺失，请刷新列表后重试',
+      files.isNotEmpty &&
+          files.every((f) => f.token.ifEmpty(f.id).startsWith('/')),
+      '百度文件路径缺失，请刷新列表后重试',
     );
     final j = check(
       await http.postForm(
-        query('https://pan.baidu.com/share/set', {
-          'channel': 'chunlei',
-          'web': 1,
-          'app_id': appId(c),
-          'bdstoken': await _bdstoken(c),
-          'clienttype': 0,
-        }),
+        query(
+          'https://pan.baidu.com/share/pset',
+          await _appParams(cookie(c), appId(c)),
+        ),
         form({
-          'fid_list': encoded(
-            files.map((f) => int.tryParse(f.id) ?? f.id).toList(),
+          'path_list': encoded(
+            files.map((f) => f.token.ifEmpty(f.id)).toList(),
           ),
           'schannel': 4,
           'channel_list': '[]',

@@ -303,8 +303,7 @@ void main() {
       expect(connector.opened, isEmpty);
       await tester.tap(find.text('去配置'));
       await tester.pumpAndSettle();
-      await tester.tap(find.text('继续网页登录'));
-      await tester.pumpAndSettle();
+      expect(find.text('百度网盘使用提醒'), findsNothing);
       expect(find.byType(WebLoginPage), findsOneWidget);
       expect(
         tester.widget<WebLoginPage>(find.byType(WebLoginPage)).target.platform,

@@ -367,11 +367,33 @@ void main() {
       final firstFolder = favorites.all.firstWhere(
         (f) => f.file.isDirectory && f.session.accountId == first,
       );
-      final opened = await favorites.open(firstFolder);
+      await favorites.rename(firstFolder.id, '  常用照片  ');
+      final renamedFolder = favorites.all.firstWhere(
+        (f) => f.id == firstFolder.id,
+      );
+      expect(renamedFolder.name, '常用照片');
+      expect(renamedFolder.file.name, firstFolder.file.name);
+      expect(renamedFolder.createdAt, firstFolder.createdAt);
+      expect(
+        favorites.contains(personal, AccountFixtureConnector.folder),
+        isTrue,
+      );
+      final opened = await favorites.open(renamedFolder);
       expect(opened.trail.last.$1, 'folder');
       expect(opened.files.single.id, 'movie');
       expect(opened.session.accountId, first);
       final familyFile = favorites.all.firstWhere((f) => f.session.isFamily);
+      await favorites.rename(familyFile.id, '旅行影片');
+      final renamedFile = favorites.all.firstWhere(
+        (f) => f.id == familyFile.id,
+      );
+      expect((await favorites.open(renamedFile)).highlight, 'movie');
+      expect(renamedFile.file.name, '假期.mp4');
+      await favorites.rename(familyFile.id, '   ');
+      expect(
+        favorites.all.firstWhere((f) => f.id == familyFile.id).name,
+        '假期.mp4',
+      );
       expect((await favorites.open(familyFile)).session.familyId, 'family');
       expect((await favorites.open(familyFile)).highlight, 'movie');
       expect(vault.activeAccountId(p), second);
@@ -383,6 +405,11 @@ void main() {
       await vault.removeAccount(p, first);
       expect(favorites.all, hasLength(1));
       expect(favorites.all.single.session.accountId, second);
+      await expectLater(
+        favorites.rename(firstFolder.id, '失效收藏'),
+        throwsA(isA<AppException>()),
+      );
+      expect(favorites.all, hasLength(1));
     },
   );
 
@@ -409,7 +436,9 @@ void main() {
       );
       final session = await repo.share(link);
       expect(await favorites.toggleShare(session), isTrue);
+      await favorites.rename(favorites.all.single.id, '课程资料');
       final saved = favorites.all.single;
+      expect(saved.name, '课程资料');
       expect(saved.isShareLink, isTrue);
       expect(saved.session.sourceLink!.passcode, '1234');
       expect(saved.session.meta('token'), isEmpty);
@@ -428,6 +457,8 @@ void main() {
           .map(CloudFavorite.fromJson)
           .singleWhere((f) => f.isShareLink);
       expect(restoredFavorite.session.sourceLink!.passcode, '1234');
+      expect(restoredFavorite.name, '课程资料');
+      expect(restoredFavorite.file.name, session.title);
       provider.shareRoot = 'fresh-root';
       final second = await addFixtureAccount(vault, p, 'B', 20);
       await vault.activate(p, second);

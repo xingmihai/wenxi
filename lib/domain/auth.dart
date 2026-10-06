@@ -135,6 +135,7 @@ class LoginCredentials {
     return switch (p) {
       CloudPlatform.lanzou => plausible(p, c.primary),
       CloudPlatform.aliyun ||
+      CloudPlatform.feijipan ||
       CloudPlatform.guangya ||
       CloudPlatform.ilanzou ||
       CloudPlatform.wopan =>
@@ -174,6 +175,43 @@ class LoginCredentials {
       }
     }
     return result;
+  }
+
+  /// Return the saved Cookie header without exporting passwords, token JSON,
+  /// browser metadata, or a token-only primary field.
+  static String? savedCookie(CloudPlatform platform, Credential? credential) {
+    if (credential == null) return null;
+    final raw = WebTokens.supports(platform) || platform == CloudPlatform.pan123
+        ? credential.field('cookie')
+        : switch (platform) {
+            CloudPlatform.tianyi => TianyiWebLogin.cookie(credential.primary),
+            CloudPlatform.weiyun => WeiyunWebLogin.cookie(credential.primary),
+            _ => credential.primary,
+          };
+    final value = raw
+        .trim()
+        .replaceFirst(RegExp(r'^Cookie:\s*', caseSensitive: false), '')
+        .trim();
+    if (value.isEmpty || RegExp(r'[\x00-\x1f\x7f-\x9f]').hasMatch(value)) {
+      return null;
+    }
+    final namePattern = RegExp(r"^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$");
+    var hasCookie = false;
+    for (final part in value.split(';')) {
+      if (part.trim().isEmpty) continue;
+      final separator = part.indexOf('=');
+      if (separator <= 0 ||
+          !namePattern.hasMatch(part.substring(0, separator).trim())) {
+        return null;
+      }
+      hasCookie = true;
+    }
+    if (platform == CloudPlatform.ctfile &&
+        !cookiePairs(value).containsKey('ctfile_session')) {
+      return null;
+    }
+    // Keep encoded values, empty cookies, duplicates, and '=' padding intact.
+    return hasCookie ? value : null;
   }
 
   static String mergeCookies(List<String> values) {
@@ -234,7 +272,8 @@ class LoginCredentials {
       return '';
     }
 
-    if (platform == CloudPlatform.ilanzou) {
+    if (platform == CloudPlatform.ilanzou ||
+        platform == CloudPlatform.feijipan) {
       final data = WebTokens.decode(raw);
       raw = jsonEncode({
         'appToken': token(['appToken']),
@@ -358,6 +397,7 @@ class LoginCredentials {
   ) {
     final value = normalize(p, raw);
     final fields = switch (p) {
+      CloudPlatform.feijipan => WebTokens.fields(p, value),
       CloudPlatform.aliyun ||
       CloudPlatform.guangya ||
       CloudPlatform.ilanzou ||
@@ -390,6 +430,7 @@ class LoginCredentials {
   }
 
   static String hint(CloudPlatform p) => switch (p) {
+    CloudPlatform.feijipan => '请粘贴小飞机网页登录的 appToken，或包含 appToken 和 uuid 的 JSON',
     CloudPlatform.ctfile => '请粘贴城通网盘「开放接口登录密钥管理」中的 Session Token；也可切换邮箱密码登录',
     CloudPlatform.pan115 => '请粘贴 115 登录后的完整 Cookie，需包含 UID、CID 和 SEID',
     CloudPlatform.baidu => 'Cookie 需包含非空的 BDUSS',
@@ -595,6 +636,7 @@ class AccountLoginService {
       final sameSession = switch (p) {
         CloudPlatform.aliyun ||
         CloudPlatform.guangya ||
+        CloudPlatform.feijipan ||
         CloudPlatform.ilanzou ||
         CloudPlatform.weiyun ||
         CloudPlatform.wopan => LoginCredentials.sameWebTokenSession,
@@ -762,6 +804,17 @@ class WebLoginTarget {
       localStorageKey: 'disk-pc-vuex',
       storageOrigins: ['https://ilanzou.com'],
     ),
+    CloudPlatform.feijipan: WebLoginTarget(
+      CloudPlatform.feijipan,
+      'https://www.feijipan.com/console/files/0',
+      [
+        'https://www.feijipan.com',
+        'https://api.feijipan.com',
+        'https://share.feijipan.com',
+      ],
+      localStorageKey: 'vuex',
+      storageOrigins: ['https://feijipan.com', 'https://share.feijipan.com'],
+    ),
     CloudPlatform.weiyun: WebLoginTarget(
       CloudPlatform.weiyun,
       'https://www.weiyun.com/disk',
@@ -791,10 +844,11 @@ class WebLoginTarget {
   String get readStorageScript {
     if (platform == CloudPlatform.xunlei) return XunleiWebLogin.readScript;
     final key = jsonEncode(localStorageKey);
-    if (platform == CloudPlatform.ilanzou) {
+    if (platform == CloudPlatform.ilanzou ||
+        platform == CloudPlatform.feijipan) {
       return r'''(() => {
         let common = {};
-        for (const key of ['disk-pc-vuex', 'vuex']) {
+        for (const key of ['disk-pc-vuex', 'vuex', 'disk-vuex']) {
           try {
             const stored = JSON.parse(localStorage.getItem(key) || '{}').common || {};
             if (stored.appToken) { common = stored; break; }
@@ -852,8 +906,9 @@ class WebLoginTarget {
   String get clearStorageScript {
     if (platform == CloudPlatform.xunlei) return XunleiWebLogin.clearScript;
     final key = jsonEncode(localStorageKey);
-    if (platform == CloudPlatform.ilanzou) {
-      return "localStorage.removeItem('disk-pc-vuex');localStorage.removeItem('vuex');";
+    if (platform == CloudPlatform.ilanzou ||
+        platform == CloudPlatform.feijipan) {
+      return "localStorage.removeItem('disk-pc-vuex');localStorage.removeItem('vuex');localStorage.removeItem('disk-vuex');";
     }
     if (platform == CloudPlatform.wopan) {
       return r'''(() => {

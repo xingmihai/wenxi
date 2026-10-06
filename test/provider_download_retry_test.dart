@@ -5,6 +5,7 @@ import 'package:asterlink/core/json.dart';
 import 'package:asterlink/data/cleanup_outbox.dart';
 import 'package:asterlink/data/cloud_repository.dart';
 import 'package:asterlink/data/http.dart';
+import 'package:asterlink/data/providers/baidu.dart';
 import 'package:asterlink/data/providers/quark.dart';
 import 'package:asterlink/data/providers/uc.dart';
 import 'package:asterlink/data/state_store.dart';
@@ -122,6 +123,7 @@ void main() {
         vault,
         CleanupOutbox(store, http),
         retryWait: (_) async {},
+        directShareDownloadEnabled: (_, _) => false,
       );
       const session = BrowseSession(
         platform: CloudPlatform.quark,
@@ -232,6 +234,31 @@ void main() {
           CleanupOutbox(store, http),
           retryWait: (delay) async => delays.add(delay),
         );
+        if (platform == CloudPlatform.baidu) {
+          repository.connectors[platform] = BaiduConnector(
+            repository.http,
+            store: vault,
+            linkLookup:
+                ({
+                  required cookie,
+                  required path,
+                  required fileId,
+                  required appId,
+                  required device,
+                }) async {
+                  // The private service is injected here; its encrypted client
+                  // protocol is covered separately by baidu_link_service_test.
+                  final response = await repository.http.postJsonRead(
+                    'https://link.example.test/v1/baidu/link',
+                    {'fileId': fileId},
+                  );
+                  return (
+                    url: response.json.list('urls').single.str('url'),
+                    preview: false,
+                  );
+                },
+          );
+        }
         final spec = await repository.prepare(
           BrowseSession(
             platform: platform,
@@ -373,12 +400,14 @@ void main() {
                 store: vault,
                 stageCleanup: stage,
                 taskDelay: Duration.zero,
+                directShareDownloadEnabled: (_) => false,
               )
             : UcConnector(
                 repository.http,
                 store: vault,
                 stageCleanup: stage,
                 taskDelay: Duration.zero,
+                directShareDownloadEnabled: (_) => false,
               );
         final session = BrowseSession(
           platform: platform,

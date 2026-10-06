@@ -11,6 +11,7 @@ import '../platform/file_access.dart';
 import '../playback/playback_controller.dart';
 import '../playback/recent_playback.dart';
 import 'common.dart';
+import 'baidu_download_prompt.dart';
 import 'player_page.dart';
 import 'uc_tv_authorization_page.dart';
 
@@ -37,6 +38,11 @@ Future<void> openRecentPlayback(
       MaterialPageRoute(
         builder: (_) => PlayerPage(
           controller,
+          confirmDownload: () => confirmBaiduDownload(
+            context,
+            services,
+            controller.current.platform,
+          ),
           onAuthorizeUcTv: controller.current.platform == CloudPlatform.uc
               ? () => openUcTvAuthorization(
                   context,

@@ -254,6 +254,50 @@ func TestHTTPConnectionCountsExcludeCooldown(t *testing.T) {
 	}
 }
 
+func TestBaiduUpgradesLegacyCheckpointConnectionLimit(t *testing.T) {
+	for _, tc := range []struct {
+		profile string
+		limit   int
+	}{
+		{"baidu", 1}, {"baidu_preview", 1},
+	} {
+		t.Run(tc.profile, func(t *testing.T) {
+			storage, payload, key := openTestCore(t)
+			f := serveFile(t, 2*1024*1024, 30*time.Millisecond)
+			startFile(t, "baidu-resume", f.server.URL+"/file", 64, 1024*1024)
+			waitState(t, "baidu-resume", func(s snapshot) bool { return s.Downloaded > 0 && s.Status != "done" })
+			if err := Pause("baidu-resume"); err != nil {
+				t.Fatal(err)
+			}
+			if err := Close(); err != nil {
+				t.Fatal(err)
+			}
+			if err := Open(storage, payload, key); err != nil {
+				t.Fatal(err)
+			}
+			deadline := time.Now().Add(time.Second)
+			for f.active.Load() != 0 && time.Now().Before(deadline) {
+				time.Sleep(time.Millisecond)
+			}
+			if f.active.Load() != 0 {
+				t.Fatal("old requests did not stop")
+			}
+			f.peak.Store(0)
+			raw, _ := json.Marshal(request{ID: "baidu-resume", URL: f.server.URL + "/refreshed",
+				Headers:     map[string]string{"Cookie": "test-cookie=local-only"},
+				Connections: tc.limit, ConnectionProfile: tc.profile, Retries: 3})
+			if err := Begin(string(raw)); err != nil {
+				t.Fatal(err)
+			}
+			state := waitState(t, "baidu-resume", func(s snapshot) bool { return s.Status == "done" })
+			assertPayload(t, state, f.data)
+			if f.peak.Load() != int32(tc.limit) || state.TotalConnections != tc.limit {
+				t.Fatalf("peak=%d total=%d, want %d", f.peak.Load(), state.TotalConnections, tc.limit)
+			}
+		})
+	}
+}
+
 func TestPauseResumeAfterProcessRestartAndURLRefresh(t *testing.T) {
 	storage, payload, key := openTestCore(t)
 	f := serveFile(t, 2*1024*1024, 0)

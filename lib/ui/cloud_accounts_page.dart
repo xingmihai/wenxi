@@ -4,6 +4,7 @@ import '../app_services.dart';
 import '../data/state_store.dart';
 import '../domain/models.dart';
 import 'app_popup_menu.dart';
+import 'account_cookie.dart';
 import 'common.dart';
 import 'login_page.dart';
 import 'uc_tv_authorization_page.dart';
@@ -19,6 +20,13 @@ class CloudAccountsPage extends StatelessWidget {
     String action,
   ) async {
     switch (action) {
+      case 'copyCookie':
+        await copyCloudAccountCookie(
+          context,
+          services.vault,
+          account.platform,
+          account.id,
+        );
       case 'rename':
         final name = await askText(
           context,
@@ -151,6 +159,11 @@ class CloudAccountsPage extends StatelessWidget {
                       icon: CupertinoIcons.ellipsis,
                       onSelected: (action) => _action(context, account, action),
                       actions: [
+                        const AppMenuAction(
+                          value: 'copyCookie',
+                          label: '复制 Cookie',
+                          icon: CupertinoIcons.doc_on_doc,
+                        ),
                         const AppMenuAction(
                           value: 'rename',
                           label: '自定义名称',

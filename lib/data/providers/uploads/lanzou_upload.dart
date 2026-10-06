@@ -6,6 +6,7 @@ class _LanzouAccountContext {
   _LanzouAccountContext(this.cookie);
   String cookie;
   Map<String, String> parameters = {};
+  Json? verifiedFiles;
   Map<String, String> get headers => {
     'Cookie': cookie,
     'User-Agent': WebLoginTarget.desktopUserAgent,
@@ -73,9 +74,40 @@ extension _LanzouPersonal on LanzouConnector {
     try {
       context.parameters = LanzouPage(response.body).accountParameters;
     } on AppException {
-      throw const AccountLoginRequired('蓝奏登录已过期或尚未进入文件页，请重新网页登录');
+      // A logged-in browser can receive a different disk document from this
+      // HTTP client. The file API also accepts the authenticated cookie alone.
+      DiagnosticLog.event(
+        'lanzou.account_page_fallback',
+        fields: {
+          'status': response.status,
+          'bodyCharacters': response.body.length,
+          'reason': 'account_parameters_missing',
+        },
+      );
+      context.verifiedFiles = await _verifyAccountFiles(context);
+      final userId =
+          LoginCredentials.cookiePairs(context.cookie)['ylogin'] ?? '';
+      require(
+        RegExp(r'^\d{1,20}$').hasMatch(userId),
+        '蓝奏文件权限验证成功，但账号标识不完整，请刷新网页登录后再检测',
+      );
+      context.parameters = {'uid': userId};
+      DiagnosticLog.event('lanzou.account_api_verified');
     }
     return context;
+  }
+
+  Future<Json> _verifyAccountFiles(_LanzouAccountContext context) async {
+    final files = await _accountCall(context, {
+      'task': 5,
+      'folder_id': '-1',
+      'pg': 1,
+    }, listing: true);
+    require(
+      files.integer('zt') == 2 || files['text'] is List,
+      '蓝奏未返回有效文件列表，请在网页进入「我的文件」后重新检测',
+    );
+    return files;
   }
 
   Json _accountChecked(HttpResult response, {bool listing = false}) {

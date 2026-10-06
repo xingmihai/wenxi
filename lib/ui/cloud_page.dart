@@ -33,6 +33,7 @@ const cloudEntries = <(String, String, CloudPlatform?)>[
   ('lanzous', '蓝奏云优享版', CloudPlatform.ilanzou),
   ('lanzous', '蓝奏云', CloudPlatform.lanzou),
   ('ctfile', '城通网盘', CloudPlatform.ctfile),
+  ('feijipan', '小飞机网盘', CloudPlatform.feijipan),
 ];
 
 class CloudPage extends StatelessWidget {

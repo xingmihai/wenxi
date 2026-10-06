@@ -83,7 +83,7 @@ Credential _credential(CloudPlatform platform, {int revision = 42}) =>
         'refreshToken': 'fixture-refresh-token',
         'userId': 'fixture-user',
       },
-      CloudPlatform.ilanzou => {
+      CloudPlatform.feijipan || CloudPlatform.ilanzou => {
         'primary': 'fixture-app-token:0123456789',
         'accessToken': 'fixture-app-token:0123456789',
         'uuid': 'fixture-device-123',
