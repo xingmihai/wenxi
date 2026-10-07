@@ -59,11 +59,13 @@ jobs:
       - uses: ./.github/actions/setup
         with:
           android: ${{ matrix.target == 'android' && 'true' || 'false' }}
-      - name: Require official release configuration
+      - name: Require community release configuration
         run: |
-          if ($env:ASTERLINK_APPLICATION_ID -ne 'com.asterlink.app' -or
-              -not $env:ASTERLINK_CONTROL_URL -or -not $env:UMENG_APPKEY) {
-            throw 'Configure the original application ID, control URL and statistics key in the release environment.'
+          if (-not $env:ASTERLINK_APPLICATION_ID) {
+            throw 'Set the ASTERLINK_APPLICATION_ID variable to your own application id.'
+          }
+          if ($env:ASTERLINK_APPLICATION_ID -eq 'com.asterlink.app') {
+            throw 'com.asterlink.app is reserved for official releases; set your own application id.'
           }
       - name: Prepare Android signing files
         if: matrix.target == 'android'
