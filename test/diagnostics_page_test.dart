@@ -206,7 +206,7 @@ void main() {
       expect(find.text('反馈错误建议先清空当前日志再去复现错误导出最新日志'), findsOneWidget);
       await tester.enterText(find.byType(TextField), '白屏，pwd=private-password');
       await tapVisible(tester, find.byKey(const Key('diagnostics-feedback')));
-      expect(opened.toString(), 'https://github.com/z7786/wenxi');
+      expect(opened.toString(), 'https://github.com/xingmihai/wenxi');
       expect(bundle.exports, 0);
       expect(bundle.exportedNote, isNull);
       expect(find.text('复制排查摘要'), findsNothing);

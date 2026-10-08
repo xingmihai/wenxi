@@ -1,6 +1,6 @@
 import 'package:asterlink/core/json.dart';
 
-const githubRepository = 'z7786/wenxi';
+const githubRepository = 'xingmihai/wenxi';
 
 Json githubRelease({
   String tag = 'v0.6.0+54',

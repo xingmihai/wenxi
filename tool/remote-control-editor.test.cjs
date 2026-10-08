@@ -117,12 +117,12 @@ test('all controls coexist, with independent normal and forced platform updates'
   config.revision = 9;
   Object.assign(config.announcement, {
     enabled: true, id: 'notice-new', title: '活动公告', content: '第一行\n第二行',
-    buttonText: '查看详情', buttonUrl: 'https://github.com/z7786/wenxi#readme',
+    buttonText: '查看详情', buttonUrl: 'https://github.com/xingmihai/wenxi#readme',
   });
   config.clouds.uc = { enabled: false, message: '维护中，请稍后重试。' };
-  Object.assign(config.updates.android, { enabled: true, build: 52, version: '0.3.47', force: true, downloadUrl: 'https://github.com/z7786/wenxi/releases' });
-  Object.assign(config.updates.windows, { enabled: true, build: 51, force: false, downloadUrl: 'https://github.com/z7786/wenxi/releases' });
-  config.help = { enabled: true, url: 'https://github.com/z7786/wenxi' };
+  Object.assign(config.updates.android, { enabled: true, build: 52, version: '0.3.47', force: true, downloadUrl: 'https://github.com/xingmihai/wenxi/releases' });
+  Object.assign(config.updates.windows, { enabled: true, build: 51, force: false, downloadUrl: 'https://github.com/xingmihai/wenxi/releases' });
+  config.help = { enabled: true, url: 'https://github.com/xingmihai/wenxi' };
   valid(config);
   const roundTrip = C.parse(JSON.stringify(config, null, 2));
   assert.deepEqual(native(roundTrip), native(config));

@@ -42,7 +42,7 @@ void main() {
       expect(update.build, 54);
       expect(update.notes, '更新说明\n修复已知问题');
       expect(update.force, isFalse);
-      expect(update.releaseKey, contains('github:z7786/wenxi:android:arm64:'));
+      expect(update.releaseKey, contains('github:xingmihai/wenxi:android:arm64:'));
       expect(
         update.downloadUrl.pathSegments.last,
         endsWith('android-arm64.apk'),
@@ -177,11 +177,11 @@ void main() {
     'Only an asset URL belonging to this repository, release and file is accepted',
     () {
       for (final url in [
-        'http://github.com/z7786/wenxi/releases/download/v0.6.0+54/app.apk',
-        'https://github.com.evil.test/z7786/wenxi/releases/download/v0.6.0+54/app.apk',
+        'http://github.com/xingmihai/wenxi/releases/download/v0.6.0+54/app.apk',
+        'https://github.com.evil.test/xingmihai/wenxi/releases/download/v0.6.0+54/app.apk',
         'https://github.com/another/repo/releases/download/v0.6.0+54/app.apk',
-        'https://github.com/z7786/wenxi/releases/download/v0.5.0/app.apk',
-        'https://github.com/z7786/wenxi/releases/download/v0.6.0+54/different.apk',
+        'https://github.com/xingmihai/wenxi/releases/download/v0.5.0/app.apk',
+        'https://github.com/xingmihai/wenxi/releases/download/v0.6.0+54/different.apk',
       ]) {
         final data = githubRelease(files: ['app.apk']);
         (data['assets'] as List).first['browser_download_url'] = url;
@@ -209,7 +209,7 @@ void main() {
       await source.check();
       expect(
         http.calls.single.toString(),
-        'https://api.github.com/repos/z7786/wenxi/releases/latest',
+        'https://api.github.com/repos/xingmihai/wenxi/releases/latest',
       );
       now = now.add(GitHubUpdateService.refreshInterval);
       await source.check();

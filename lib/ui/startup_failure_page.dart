@@ -288,7 +288,7 @@ class _StartupFailurePageState extends State<StartupFailurePage> {
                         ? null
                         : () => openRemoteLink(
                             context,
-                            Uri.parse('https://github.com/z7786/wenxi/issues'),
+                            Uri.parse('https://github.com/xingmihai/wenxi/issues'),
                           ),
                     icon: const Icon(CupertinoIcons.arrow_up_right_square),
                     label: const Text('项目地址'),

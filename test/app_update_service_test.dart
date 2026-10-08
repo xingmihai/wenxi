@@ -124,7 +124,7 @@ void main() {
           '1.2.0',
           0,
           Uri.parse(
-            'https://github.com/z7786/wenxi/releases/download/v1.2.0/app.$extension',
+            'https://github.com/xingmihai/wenxi/releases/download/v1.2.0/app.$extension',
           ),
           '',
           releaseKey: 'github:v1.2.0',

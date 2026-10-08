@@ -552,7 +552,7 @@ void main() {
       expect(opened.last.toString(), 'https://help.example.test/new-guide');
       expect(find.byType(AlertDialog), findsNothing);
       await tapMine(tester, '项目地址');
-      expect(opened.last.toString(), 'https://github.com/z7786/wenxi');
+      expect(opened.last.toString(), 'https://github.com/xingmihai/wenxi');
       expect(find.byType(AlertDialog), findsNothing);
     },
   );

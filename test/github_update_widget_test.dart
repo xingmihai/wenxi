@@ -121,7 +121,7 @@ void main() {
       expect(opened, hasLength(1));
       expect(opened.single.host, 'github.com');
       expect(opened.single.pathSegments, [
-        'z7786',
+        'xingmihai',
         'wenxi',
         'releases',
         'download',

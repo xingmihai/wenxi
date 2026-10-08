@@ -138,7 +138,7 @@ class _DiagnosticsPageState extends State<DiagnosticsPage> {
     try {
       await openRemoteLink(
         context,
-        Uri.parse('https://github.com/z7786/wenxi'),
+        Uri.parse('https://github.com/xingmihai/wenxi'),
         launcher: widget.linkLauncher,
       );
     } finally {

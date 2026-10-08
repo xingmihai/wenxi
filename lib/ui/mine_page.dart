@@ -621,10 +621,10 @@ class MinePage extends StatelessWidget {
       context,
       CupertinoIcons.link,
       '项目地址',
-      'github.com/z7786/wenxi',
+      'github.com/xingmihai/wenxi',
       () => openRemoteLink(
         context,
-        Uri.parse('https://github.com/z7786/wenxi'),
+        Uri.parse('https://github.com/xingmihai/wenxi'),
         launcher: linkLauncher,
       ),
     ),
