@@ -1,0 +1,49 @@
+name: Liquid Glass check
+
+# Runs only the Liquid Glass suite.
+#
+# The full pipeline (checks.yml) runs 300+ test files that cover networking,
+# native bridges and platform specific code. Use this workflow to validate
+# lib/ui/liquid_glass.dart on its own, without waiting for the whole suite.
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'lib/ui/liquid_glass.dart'
+      - 'test/liquid_glass_test.dart'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: liquid-glass-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: windows-2022
+    timeout-minutes: 20
+    env:
+      PUB_HOSTED_URL: https://pub.dev
+      FLUTTER_STORAGE_BASE_URL: https://storage.googleapis.com
+      GOPROXY: https://proxy.golang.org,direct
+      GOTOOLCHAIN: go1.24.7
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Set up toolchain
+        uses: ./.github/actions/setup
+
+      - name: Resolve locked packages
+        run: flutter pub get --enforce-lockfile
+
+      - name: Analyze the glass surface
+        run: flutter analyze --no-pub lib/ui/liquid_glass.dart
+
+      - name: Run the Liquid Glass tests
+        run: >
+          flutter test --no-pub --concurrency=1 --reporter expanded
+          test/liquid_glass_test.dart

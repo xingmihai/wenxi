@@ -20,7 +20,7 @@ Widget _host({
     );
 
 void main() {
-  testWidgets('renders its child and picks up the theme appearance', (
+  testWidgets('renders its child and exposes the theme appearance', (
     WidgetTester tester,
   ) async {
     await tester.pumpWidget(
@@ -28,11 +28,10 @@ void main() {
     );
 
     expect(find.text('inside'), findsOneWidget);
-
-    final appearance = AppAppearance.of(
-      tester.element(find.text('inside')),
+    expect(
+      AppAppearance.of(tester.element(find.text('inside'))).glassStyle,
+      GlassStyle.clear,
     );
-    expect(appearance.glassStyle, GlassStyle.clear);
   });
 
   testWidgets('samples the backdrop for clear and frosted glass', (
@@ -54,7 +53,10 @@ void main() {
     WidgetTester tester,
   ) async {
     await tester.pumpWidget(
-      _host(style: GlassStyle.solid, child: const LiquidGlass(child: SizedBox())),
+      _host(
+        style: GlassStyle.solid,
+        child: const LiquidGlass(child: SizedBox()),
+      ),
     );
 
     expect(find.byType(BackdropFilter), findsNothing);
@@ -64,7 +66,7 @@ void main() {
     );
   });
 
-  testWidgets('button press is delivered and disabled buttons ignore taps', (
+  testWidgets('an enabled button forwards the tap', (
     WidgetTester tester,
   ) async {
     var taps = 0;
@@ -80,7 +82,12 @@ void main() {
     await tester.tap(find.text('解析'));
     await tester.pumpAndSettle();
     expect(taps, 1);
+  });
 
+  testWidgets('a disabled button installs no tap handler', (
+    WidgetTester tester,
+  ) async {
+    var taps = 0;
     await tester.pumpWidget(
       _host(
         child: LiquidGlassButton(
@@ -90,8 +97,11 @@ void main() {
         ),
       ),
     );
-    await tester.tap(find.text('解析'));
+
+    // A disabled surface installs no recognizer at all, so ask the tap not to
+    // fail on a miss: the point of the assertion is that nothing fires.
+    await tester.tap(find.text('解析'), warnIfMissed: false);
     await tester.pumpAndSettle();
-    expect(taps, 1, reason: 'a disabled button must not fire');
+    expect(taps, 0);
   });
 }
