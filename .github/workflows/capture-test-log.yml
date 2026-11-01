@@ -96,4 +96,4 @@ jobs:
             exit 0
           fi
           git commit -m "ci: capture flutter test log for run ${GITHUB_RUN_ID}"
-          git push origin HEAD:ci-logs
+          git push origin HEAD:"${GITHUB_REF_NAME}"
