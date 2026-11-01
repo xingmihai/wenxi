@@ -1,0 +1,115 @@
+name: Build community pre-release
+
+# 预发行：面向 beta / rc 标签的社区构建。
+#
+# 与 release.yml 的区别：
+#   * release.yml 要求官方 applicationId / 控制 URL / 友盟 key，产物走签名发布
+#   * 本流程使用 config/build.community.json，不依赖任何官方密钥，
+#     任何人 fork 后都能跑通，并自动创建「预发行」版本
+on:
+  push:
+    tags:
+      - 'v*-*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: '预发行标签（如 v1.8.0-beta.1）'
+        required: true
+        default: 'v0.0.0-beta.0'
+
+concurrency:
+  group: prerelease-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: ${{ matrix.target }}
+    runs-on: windows-2022
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [android, windows]
+    env:
+      PUB_HOSTED_URL: https://pub.dev
+      FLUTTER_STORAGE_BASE_URL: https://storage.googleapis.com
+      GOPROXY: https://proxy.golang.org,direct
+      GOTOOLCHAIN: go1.24.7
+      GRADLE_OPTS: -Dorg.gradle.jvmargs=-Xmx4g
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Set up toolchain
+        uses: ./.github/actions/setup
+        with:
+          android: ${{ matrix.target == 'android' && 'true' || 'false' }}
+
+      - name: Install pinned Android SDK components
+        if: matrix.target == 'android'
+        run: |
+          $sdkmanager = Join-Path $env:ANDROID_HOME 'cmdline-tools/latest/bin/sdkmanager.bat'
+          & $sdkmanager 'platforms;android-36' 'build-tools;36.0.0' 'ndk;28.2.13676358'
+          if ($LASTEXITCODE -ne 0) { throw 'Android SDK installation failed.' }
+
+      - name: Build Android (community, unsigned)
+        if: matrix.target == 'android'
+        run: |
+          ./tool/build-android.ps1 -BuildConfig config/build.community.json -Unsigned
+
+      - name: Build Windows (community)
+        if: matrix.target == 'windows'
+        run: |
+          ./tool/build-windows.ps1 -BuildConfig config/build.community.json
+          Compress-Archive `
+            -Path "build\windows\x64\runner\Release\*" `
+            -DestinationPath "asterlink-windows-x64.zip"
+
+      - name: Upload pre-release assets
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: prerelease-${{ matrix.target }}
+          path: |
+            build/app/outputs/flutter-apk/app-release.apk
+            asterlink-windows-x64.zip
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
+
+  publish:
+    name: Publish pre-release
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - name: Download assets
+        uses: actions/download-artifact@cc203385981b70ca67e1cc392babf9cc229d5806 # v5
+        with:
+          path: prerelease-assets
+          merge-multiple: true
+
+      - name: Flatten assets
+        run: |
+          mkdir -p dist
+          find prerelease-assets -type f \( -name '*.apk' -o -name '*.zip' \) \
+            -exec cp {} dist/ \;
+          ls -lh dist
+
+      - name: Create pre-release
+        uses: softprops/action-gh-release@da05d552573ad9aba039495c0063af5d8b3f9a7e # v2.2.2
+        with:
+          prerelease: true
+          generate_release_notes: true
+          name: ${{ github.ref_name }}
+          tag_name: ${{ github.ref_name }}
+          files: dist/*
